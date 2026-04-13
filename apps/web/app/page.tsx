@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ChangeEvent } from "react";
 
 type IssueItem = {
   slug: string;
@@ -13,6 +13,8 @@ type ScenarioRow = {
   probability: number;
   delta_pct: number;
 };
+
+type ScenarioClusterKey = "escalation" | "maritime_shock" | "hybrid_fragmentation" | "stabilization";
 
 type SignalRow = {
   title: string;
@@ -202,6 +204,39 @@ function trendMeaning(stateLabel: string, trend: string): string {
   return "Signal velocity is flat.";
 }
 
+function mapScenarioCluster(name: string): ScenarioClusterKey {
+  const n = name.toLowerCase();
+  if (n.includes("negotiated") || n.includes("reopening") || n.includes("corridor") || n.includes("stabil")) {
+    return "stabilization";
+  }
+  if (n.includes("maritime") || n.includes("infrastructure") || n.includes("shipping") || n.includes("chokepoint")) {
+    return "maritime_shock";
+  }
+  if (n.includes("fragmentation") || n.includes("rupture") || n.includes("hybrid")) {
+    return "hybrid_fragmentation";
+  }
+  return "escalation";
+}
+
+const CLUSTER_META: Record<ScenarioClusterKey, { title: string; subtitle: string }> = {
+  escalation: {
+    title: "Escalation Path",
+    subtitle: "Direct conflict expansion and coercive signaling",
+  },
+  maritime_shock: {
+    title: "Maritime / Infrastructure Shock",
+    subtitle: "Shipping, corridors, chokepoints, and energy transit disruption",
+  },
+  hybrid_fragmentation: {
+    title: "Hybrid / Internal Fragmentation",
+    subtitle: "Proxy pressure, political fracture, and internal system stress",
+  },
+  stabilization: {
+    title: "Managed Stabilization",
+    subtitle: "Negotiation, containment, and partial reopening dynamics",
+  },
+};
+
 function buildForceSvg(forces: { name: string; score: number }[]): string {
   const width = 740;
   const height = 320;
@@ -316,6 +351,34 @@ export default function HomePage() {
     ];
   }, [snapshot]);
 
+  const scenarioClusters = useMemo(() => {
+    const base: Record<ScenarioClusterKey, ScenarioRow[]> = {
+      escalation: [],
+      maritime_shock: [],
+      hybrid_fragmentation: [],
+      stabilization: [],
+    };
+    (snapshot?.scenarios ?? []).forEach((row) => {
+      const cluster = mapScenarioCluster(row.name);
+      base[cluster].push(row);
+    });
+
+    return (Object.keys(base) as ScenarioClusterKey[]).map((key) => {
+      const rows = [...base[key]].sort((a, b) => b.probability - a.probability);
+      const totalProbability = rows.reduce((acc, row) => acc + row.probability, 0);
+      const avgDelta = rows.length > 0 ? rows.reduce((acc, row) => acc + row.delta_pct, 0) / rows.length : 0;
+      return {
+        key,
+        title: CLUSTER_META[key].title,
+        subtitle: CLUSTER_META[key].subtitle,
+        rows,
+        top: rows[0] ?? null,
+        totalProbability,
+        avgDelta,
+      };
+    });
+  }, [snapshot]);
+
   useEffect(() => {
     const loadCatalog = async () => {
       const response = await fetch(`${apiBase}/v1/issues`);
@@ -372,13 +435,9 @@ export default function HomePage() {
     return () => source.close();
   }, [selectedIssueParam, lensType, activeLensFocus]);
 
-  const toggleIssue = (slug: string) => {
-    setSelectedIssues((prev) => {
-      if (prev.includes(slug)) {
-        return prev.filter((item) => item !== slug);
-      }
-      return [...prev, slug];
-    });
+  const handleIssueMultiSelect = (event: ChangeEvent<HTMLSelectElement>) => {
+    const values = Array.from(event.target.selectedOptions).map((option) => option.value);
+    setSelectedIssues(values);
   };
 
   return (
@@ -421,7 +480,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      <section className="panel compact">
+      <section className="panel compact compact-risk">
         <h2>Conflict Escalation Likelihood</h2>
         <div className="battery-shell">
           <div
@@ -437,16 +496,15 @@ export default function HomePage() {
 
       <section className="panel compact">
         <h2>Issue Buckets</h2>
-        <div className="chip-grid">
-          {issues.map((issue) => {
-            const selected = selectedIssues.includes(issue.slug);
-            return (
-              <button type="button" key={issue.slug} className={selected ? "chip selected" : "chip"} onClick={() => toggleIssue(issue.slug)}>
-                {issue.label}
-              </button>
-            );
-          })}
-        </div>
+        <p className="muted mini">Multi-select list (Ctrl/Cmd + Click)</p>
+        <select className="multi-select" multiple value={selectedIssues} onChange={handleIssueMultiSelect}>
+          {issues.map((issue) => (
+            <option key={issue.slug} value={issue.slug}>
+              {issue.label}
+            </option>
+          ))}
+        </select>
+        <p className="muted mini">Selected: {selectedIssues.length}</p>
       </section>
 
       <section className="panel compact">
@@ -519,57 +577,61 @@ export default function HomePage() {
       </section>
 
       <section className="panel">
-        <h2>How Scenario Is Built</h2>
-        <p className="muted mini">
-          Consensus uses weighted fusion:
-          {" "}
-          Driving Forces {weightRole(snapshot?.scenario_methods.consensus.weights.driving_forces ?? 0)},
-          {" "}
-          Game Theory {weightRole(snapshot?.scenario_methods.consensus.weights.game_theory ?? 0)},
-          {" "}
-          Chessboard {weightRole(snapshot?.scenario_methods.consensus.weights.chessboard ?? 0)}.
-        </p>
-        <p className="muted mini">
-          Method disagreement: {disagreementBand(snapshot?.scenario_methods.consensus.disagreement_index ?? 0)}
-        </p>
-        <div className="impact-grid">
-          {methodTopRows.map((item) => (
-            <div key={item.method} className="impact-card">
-              <p><strong>{item.method}</strong></p>
-              <p className="muted mini">
-                Top scenario: {item.row?.name ?? "Unknown"} ({impactLevel(item.row?.probability ?? 0)} confidence)
-              </p>
-            </div>
-          ))}
-        </div>
         <details>
-          <summary>Projected next actor moves ({snapshot?.next_scenario_forecast.horizon_steps ?? 0}-step horizon)</summary>
-          <ul className="signal-list">
-            {(snapshot?.next_scenario_forecast.actor_moves ?? []).map((move) => (
-              <li key={`${move.actor}-${move.move}`}>
-                <p>
-                  {move.actor}: {move.move} ({impactLevel(move.confidence)} confidence)
+          <summary>How Scenario Is Built (expand)</summary>
+          <p className="muted mini">
+            Consensus uses weighted fusion:
+            {" "}
+            Driving Forces {weightRole(snapshot?.scenario_methods.consensus.weights.driving_forces ?? 0)},
+            {" "}
+            Game Theory {weightRole(snapshot?.scenario_methods.consensus.weights.game_theory ?? 0)},
+            {" "}
+            Chessboard {weightRole(snapshot?.scenario_methods.consensus.weights.chessboard ?? 0)}.
+          </p>
+          <p className="muted mini">
+            Method disagreement: {disagreementBand(snapshot?.scenario_methods.consensus.disagreement_index ?? 0)}
+          </p>
+          <div className="impact-grid">
+            {methodTopRows.map((item) => (
+              <div key={item.method} className="impact-card">
+                <p><strong>{item.method}</strong></p>
+                <p className="muted mini">
+                  Top scenario: {item.row?.name ?? "Unknown"} ({impactLevel(item.row?.probability ?? 0)} confidence)
                 </p>
-              </li>
+              </div>
             ))}
-          </ul>
-          <p className="muted mini">{snapshot?.next_scenario_forecast.rationale ?? ""}</p>
+          </div>
+          <details>
+            <summary>Projected next actor moves ({snapshot?.next_scenario_forecast.horizon_steps ?? 0}-step horizon)</summary>
+            <ul className="signal-list">
+              {(snapshot?.next_scenario_forecast.actor_moves ?? []).map((move) => (
+                <li key={`${move.actor}-${move.move}`}>
+                  <p>
+                    {move.actor}: {move.move} ({impactLevel(move.confidence)} confidence)
+                  </p>
+                </li>
+              ))}
+            </ul>
+            <p className="muted mini">{snapshot?.next_scenario_forecast.rationale ?? ""}</p>
+          </details>
         </details>
       </section>
 
       <section className="panel">
-        <h2>Consistency Notes</h2>
-        <ul className="signal-list">
-          {(snapshot?.consistency_notes ?? []).length > 0 ? (
-            (snapshot?.consistency_notes ?? []).map((note) => (
-              <li key={note}>
-                <p>{note}</p>
-              </li>
-            ))
-          ) : (
-            <li><p>No contradiction flags detected in current snapshot.</p></li>
-          )}
-        </ul>
+        <details>
+          <summary>Consistency Notes (expand)</summary>
+          <ul className="signal-list">
+            {(snapshot?.consistency_notes ?? []).length > 0 ? (
+              (snapshot?.consistency_notes ?? []).map((note) => (
+                <li key={note}>
+                  <p>{note}</p>
+                </li>
+              ))
+            ) : (
+              <li><p>No contradiction flags detected in current snapshot.</p></li>
+            )}
+          </ul>
+        </details>
       </section>
 
       <section className="panel">
@@ -585,19 +647,36 @@ export default function HomePage() {
       </section>
 
       <section className="panel">
-        <h2>Scenario Lattice</h2>
+        <h2>Scenario Lattice (Primary 4)</h2>
         <div className="scenario-grid">
-          {(snapshot?.scenarios ?? []).map((scenario) => (
-            <div key={scenario.name} className="scenario-card">
-              <h3>{scenario.name}</h3>
+          {scenarioClusters.map((cluster) => (
+            <div key={cluster.key} className="scenario-card">
+              <h3>{cluster.title}</h3>
+              <p className="muted mini">{cluster.subtitle}</p>
               <div className="mini-battery">
                 <div
                   className="mini-battery-fill"
-                  style={{ width: `${Math.round(scenario.probability * 100)}%`, background: severityColor(scenario.probability) }}
+                  style={{ width: `${Math.round(cluster.totalProbability * 100)}%`, background: severityColor(cluster.totalProbability) }}
                 />
               </div>
-              <p className="muted mini">Likelihood: {impactLevel(scenario.probability)} | Severity: {severityBandFromScore(scenario.probability)}</p>
-              <p className={scenario.delta_pct >= 0 ? "delta up" : "delta down"}>{scenario.delta_pct >= 0 ? "Rising momentum" : "Cooling momentum"}</p>
+              <p className="muted mini">
+                Likelihood: {impactLevel(cluster.totalProbability)} | Severity: {severityBandFromScore(cluster.totalProbability)}
+              </p>
+              <p className={cluster.avgDelta >= 0 ? "delta up" : "delta down"}>{cluster.avgDelta >= 0 ? "Rising momentum" : "Cooling momentum"}</p>
+              <p className="muted mini">Lead: {cluster.top?.name ?? "No active scenario"}</p>
+              <details>
+                <summary>Secondary scenarios</summary>
+                <ul className="signal-list">
+                  {cluster.rows.slice(1).map((row) => (
+                    <li key={`${cluster.key}-${row.name}`}>
+                      <p>
+                        {row.name} | {impactLevel(row.probability)} likelihood | {row.delta_pct >= 0 ? "rising" : "cooling"}
+                      </p>
+                    </li>
+                  ))}
+                  {cluster.rows.length <= 1 && <li><p className="muted mini">No secondary scenarios in this group.</p></li>}
+                </ul>
+              </details>
             </div>
           ))}
         </div>

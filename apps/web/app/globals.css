@@ -130,6 +130,12 @@ body {
   padding-bottom: 0.8rem;
 }
 
+.compact-risk h2 {
+  margin-top: 0;
+  margin-bottom: 0.4rem;
+  font-size: 1.05rem;
+}
+
 .state {
   margin: 0.15rem 0;
   font-size: 1.15rem;
@@ -264,6 +270,20 @@ body {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 0.35rem 0.55rem;
+}
+
+.multi-select {
+  width: 100%;
+  min-height: 90px;
+  background: rgba(15, 23, 35, 0.8);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.35rem;
+}
+
+.multi-select option {
+  padding: 0.2rem;
 }
 
 .signal-list {
