@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "geostate/contracts/state-taxonomy.json",
+  "title": "StateTaxonomy",
+  "type": "string",
+  "enum": [
+    "Stable",
+    "Managed tension",
+    "Controlled instability",
+    "Distributed coercion",
+    "Maritime pressure",
+    "Hybrid escalation",
+    "Pre-war transition",
+    "Regional war",
+    "Negotiated partial stabilization",
+    "Post-shock recovery"
+  ]
+}
+

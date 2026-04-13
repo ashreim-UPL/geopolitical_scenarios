@@ -1,0 +1,10 @@
+{
+  "name": "geostate-engine",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "web:dev": "npm --prefix apps/web run dev",
+    "web:build": "npm --prefix apps/web run build",
+    "web:lint": "npm --prefix apps/web run lint"
+  }
+}

@@ -1,0 +1,764 @@
+"use client";
+
+import Image from "next/image";
+import { useEffect, useMemo, useState } from "react";
+
+type IssueItem = {
+  slug: string;
+  label: string;
+};
+
+type ScenarioRow = {
+  name: string;
+  probability: number;
+  delta_pct: number;
+};
+
+type SignalRow = {
+  title: string;
+  source: string;
+  link: string;
+  issue: string;
+  published_utc: string | null;
+};
+
+type Snapshot = {
+  generated_utc: string;
+  mode: "live" | "demo";
+  selected_issues: string[];
+  lens: { type: "global" | "region" | "country"; focus: string | null };
+  current_state: { label: string; confidence: number };
+  trend: string;
+  forces: { name: string; score: number }[];
+  scenarios: ScenarioRow[];
+  scenario_methods: {
+    driving_forces: ScenarioRow[];
+    game_theory: ScenarioRow[];
+    chessboard: ScenarioRow[];
+    consensus: {
+      rows: ScenarioRow[];
+      weights: { driving_forces: number; game_theory: number; chessboard: number };
+      disagreement_index: number;
+    };
+  };
+  next_scenario_forecast: {
+    scenario: string;
+    probability: number;
+    horizon_steps: number;
+    actor_moves: { actor: string; move: string; confidence: number }[];
+    rationale: string;
+  };
+  overall_criticality: {
+    score: number;
+    percent: number;
+    band: "Low" | "Guarded" | "Elevated" | "High" | "Critical";
+    band_range: string;
+    formula: Record<string, number>;
+    meaning: string;
+  };
+  conflict_escalation: {
+    score: number;
+    percent: number;
+    band: "Low" | "Guarded" | "Elevated" | "High" | "Critical";
+    meaning: string;
+  };
+  consistency_notes: string[];
+  expert_review: {
+    panel: { role: string; region: string; view: string }[];
+    consensus: string;
+    consensus_brief: string;
+  };
+  impacts: {
+    prediction: {
+      most_likely_scenario: string;
+      probability: number;
+      brief: string;
+    };
+    regions_world: { label: string; severity: number; summary: string }[];
+    countries: { label: string; severity: number; summary: string; directness?: string }[];
+    countries_by_region: { region: string; countries: { name: string; directness: string }[] }[];
+    country_focus_options: string[];
+    sectors: { label: string; severity: number; summary: string }[];
+    indicators: { label: string; severity: number; summary: string }[];
+    three_sector_model: { label: string; severity: number; summary: string; band: string; percent: number }[];
+    maslow_hierarchy: {
+      levels: { name: string; score: number; weight: number; percent: number; band: string }[];
+      weighted_score: number;
+      dominant_score: number;
+      hierarchy_score: number;
+      percent: number;
+      band: string;
+      explanation: string;
+    };
+  };
+  signals: SignalRow[];
+  explanation: string;
+  prediction: string;
+};
+
+const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+
+const FORCE_LABELS: Record<string, string> = {
+  military: "Military",
+  economic: "Economic",
+  diplomatic: "Diplomatic",
+  narrative: "Narrative",
+  ideological: "Ideological/Perception",
+  cyber: "Cyber",
+};
+
+const DEFAULT_REGION_FOCUS_OPTIONS = ["Gulf", "MENA", "Europe", "East Asia", "Global shipping lanes"];
+const DEFAULT_COUNTRY_FOCUS_OPTIONS = ["United States", "China", "India"];
+
+function severityColor(value: number): string {
+  if (value >= 0.8) {
+    return "#ef4444";
+  }
+  if (value >= 0.6) {
+    return "#f97316";
+  }
+  if (value >= 0.4) {
+    return "#f59e0b";
+  }
+  if (value >= 0.2) {
+    return "#84cc16";
+  }
+  return "#22c55e";
+}
+
+function bandFromPercent(percent: number): string {
+  if (percent <= 20) {
+    return "Low";
+  }
+  if (percent <= 40) {
+    return "Guarded";
+  }
+  if (percent <= 60) {
+    return "Elevated";
+  }
+  if (percent <= 80) {
+    return "High";
+  }
+  return "Critical";
+}
+
+function severityBandFromScore(score: number): string {
+  return bandFromPercent(Math.round(score * 100));
+}
+
+function impactLevel(score: number): "Low" | "Medium" | "High" {
+  if (score >= 0.67) {
+    return "High";
+  }
+  if (score >= 0.34) {
+    return "Medium";
+  }
+  return "Low";
+}
+
+function confidenceLabel(score: number): "Low" | "Medium" | "High" {
+  if (score >= 0.67) {
+    return "High";
+  }
+  if (score >= 0.34) {
+    return "Medium";
+  }
+  return "Low";
+}
+
+function weightRole(weight: number): "Dominant" | "Major" | "Supporting" | "Minor" {
+  if (weight >= 0.35) {
+    return "Dominant";
+  }
+  if (weight >= 0.2) {
+    return "Major";
+  }
+  if (weight >= 0.1) {
+    return "Supporting";
+  }
+  return "Minor";
+}
+
+function disagreementBand(value: number): "Low" | "Medium" | "High" {
+  if (value >= 0.67) {
+    return "High";
+  }
+  if (value >= 0.34) {
+    return "Medium";
+  }
+  return "Low";
+}
+
+function trendMeaning(stateLabel: string, trend: string): string {
+  if (trend === "stable" && stateLabel.toLowerCase().includes("pre-war")) {
+    return "Stable means high-tension plateau, not de-escalation.";
+  }
+  if (trend === "rising") {
+    return "Signal velocity is accelerating.";
+  }
+  if (trend === "cooling") {
+    return "Signal velocity is slowing, but risk may still remain high.";
+  }
+  return "Signal velocity is flat.";
+}
+
+function buildForceSvg(forces: { name: string; score: number }[]): string {
+  const width = 740;
+  const height = 320;
+  const marginLeft = 220;
+  const rows = forces.slice(0, 6);
+  const rowHeight = 42;
+  const bars = rows
+    .map((force, idx) => {
+      const y = 40 + idx * rowHeight;
+      const barWidth = Math.round(420 * force.score);
+      const color = severityColor(force.score);
+      const label = FORCE_LABELS[force.name] ?? force.name;
+      return [
+        `<text x="20" y="${y + 17}" fill="#e5e7eb" font-size="14">${label}</text>`,
+        `<rect x="${marginLeft}" y="${y}" width="420" height="16" rx="5" fill="#1f2937" />`,
+        `<rect x="${marginLeft}" y="${y}" width="${barWidth}" height="16" rx="5" fill="${color}" />`,
+        `<text x="${marginLeft + 430}" y="${y + 13}" fill="#cbd5e1" font-size="12">${impactLevel(force.score)} impact</text>`,
+      ].join("");
+    })
+    .join("");
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
+<rect width="100%" height="100%" fill="#0f1723"/>
+<text x="20" y="24" fill="#d1fae5" font-size="16">Force Buckets (Probability Split)</text>
+${bars}
+</svg>`;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+export default function HomePage() {
+  const [issues, setIssues] = useState<IssueItem[]>([]);
+  const [selectedIssues, setSelectedIssues] = useState<string[]>([
+    "red-sea-shipping",
+    "iran-israel-dynamics",
+    "russia-ukraine-war",
+  ]);
+  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [lensType, setLensType] = useState<"global" | "region" | "country">("global");
+  const [regionFocus, setRegionFocus] = useState<string>("Gulf");
+  const [countryFocus, setCountryFocus] = useState<string>("India");
+  const [countryFocusPool, setCountryFocusPool] = useState<string[]>(DEFAULT_COUNTRY_FOCUS_OPTIONS);
+
+  const selectedIssueParam = useMemo(() => selectedIssues.join(","), [selectedIssues]);
+  const activeLensFocus = useMemo(() => {
+    if (lensType === "region") {
+      return regionFocus;
+    }
+    if (lensType === "country") {
+      return countryFocus;
+    }
+    return "";
+  }, [lensType, regionFocus, countryFocus]);
+  const forceImageDataUrl = useMemo(() => buildForceSvg(snapshot?.forces ?? []), [snapshot?.forces]);
+  const regionFocusOptions = useMemo(() => {
+    const fromSnapshot = (snapshot?.impacts.regions_world ?? []).map((item) => item.label);
+    const merged = [...DEFAULT_REGION_FOCUS_OPTIONS, ...fromSnapshot];
+    return Array.from(new Set(merged));
+  }, [snapshot]);
+  const countryFocusOptions = useMemo(() => {
+    return Array.from(new Set(countryFocusPool)).sort((a, b) => a.localeCompare(b));
+  }, [countryFocusPool]);
+
+  useEffect(() => {
+    const fromSnapshot = snapshot?.impacts.country_focus_options ?? [];
+    if (fromSnapshot.length === 0) {
+      return;
+    }
+    setCountryFocusPool((prev) => Array.from(new Set([...prev, ...fromSnapshot])));
+  }, [snapshot]);
+
+  useEffect(() => {
+    if (lensType === "region" && !regionFocusOptions.includes(regionFocus)) {
+      setRegionFocus(regionFocusOptions[0] ?? "Gulf");
+    }
+  }, [lensType, regionFocus, regionFocusOptions]);
+
+  useEffect(() => {
+    if (lensType === "country" && !countryFocusOptions.includes(countryFocus)) {
+      setCountryFocus(countryFocusOptions[0] ?? "India");
+    }
+  }, [lensType, countryFocus, countryFocusOptions]);
+
+  const overallCriticality = useMemo(() => {
+    return snapshot?.overall_criticality.score ?? 0;
+  }, [snapshot]);
+
+  const bucketSplit = useMemo(() => {
+    if (!snapshot) {
+      return { hard: 0, market: 0, soft: 0 };
+    }
+    const lookup = Object.fromEntries(snapshot.forces.map((f) => [f.name, f.score]));
+    const hard = (lookup.military ?? 0) + (lookup.cyber ?? 0);
+    const market = lookup.economic ?? 0;
+    const soft = (lookup.diplomatic ?? 0) + (lookup.narrative ?? 0) + (lookup.ideological ?? 0);
+    const total = hard + market + soft || 1;
+    return {
+      hard: hard / total,
+      market: market / total,
+      soft: soft / total,
+    };
+  }, [snapshot]);
+
+  const methodTopRows = useMemo(() => {
+    if (!snapshot) {
+      return [];
+    }
+    return [
+      { method: "Driving Forces", row: snapshot.scenario_methods.driving_forces[0] },
+      { method: "Game Theory", row: snapshot.scenario_methods.game_theory[0] },
+      { method: "Chessboard", row: snapshot.scenario_methods.chessboard[0] },
+    ];
+  }, [snapshot]);
+
+  useEffect(() => {
+    const loadCatalog = async () => {
+      const response = await fetch(`${apiBase}/v1/issues`);
+      if (!response.ok) {
+        throw new Error("Failed to load issue catalog.");
+      }
+      const payload = (await response.json()) as { issues: IssueItem[] };
+      setIssues(payload.issues);
+    };
+    void loadCatalog().catch(() => setError("Issue catalog unavailable."));
+  }, []);
+
+  useEffect(() => {
+    const fetchSnapshot = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const response = await fetch(`${apiBase}/v1/analyze`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            selected_issues: selectedIssues,
+            use_live: true,
+            lens: lensType,
+            focus: activeLensFocus || null,
+          }),
+        });
+        if (!response.ok) {
+          throw new Error(`Analyze failed (${response.status})`);
+        }
+        const payload = (await response.json()) as Snapshot;
+        setSnapshot(payload);
+      } catch {
+        setError("Live analysis unavailable. API may be down.");
+      } finally {
+        setLoading(false);
+      }
+    };
+    void fetchSnapshot();
+  }, [selectedIssueParam, selectedIssues, lensType, activeLensFocus]);
+
+  useEffect(() => {
+    if (!selectedIssueParam) {
+      return undefined;
+    }
+    const source = new EventSource(
+      `${apiBase}/v1/analyze/stream?issues=${encodeURIComponent(selectedIssueParam)}&use_live=true&lens=${encodeURIComponent(lensType)}&focus=${encodeURIComponent(activeLensFocus)}&interval_seconds=30`
+    );
+    source.addEventListener("snapshot", (event) => {
+      const parsed = JSON.parse((event as MessageEvent).data) as Snapshot;
+      setSnapshot(parsed);
+    });
+    source.onerror = () => source.close();
+    return () => source.close();
+  }, [selectedIssueParam, lensType, activeLensFocus]);
+
+  const toggleIssue = (slug: string) => {
+    setSelectedIssues((prev) => {
+      if (prev.includes(slug)) {
+        return prev.filter((item) => item !== slug);
+      }
+      return [...prev, slug];
+    });
+  };
+
+  return (
+    <main className="page-shell visual-heavy">
+      <section className="hero">
+        <div>
+          <p className="eyebrow">Geopolitical State Engine</p>
+          <h1>One-page scenario command dashboard</h1>
+          <p className="subcopy">
+            {snapshot?.mode?.toUpperCase() ?? "LIVE"} feed | {snapshot?.generated_utc ? new Date(snapshot.generated_utc).toLocaleString() : "updating"}
+          </p>
+        </div>
+        <div className="criticality-card">
+          <p>Systemic Criticality</p>
+          <div className="battery-shell">
+            <div
+              className="battery-fill"
+              style={{ width: `${Math.round(overallCriticality * 100)}%`, background: severityColor(overallCriticality) }}
+            />
+          </div>
+          <strong style={{ color: severityColor(overallCriticality) }}>
+            {snapshot?.overall_criticality.band ?? severityBandFromScore(overallCriticality)}
+          </strong>
+          <p className="muted mini">
+            Impact: {impactLevel(overallCriticality)} | Severity:{" "}
+            {snapshot?.overall_criticality.band ?? severityBandFromScore(overallCriticality)}
+          </p>
+          <p className="muted mini">
+            Meaning: {snapshot?.overall_criticality.meaning ?? "Composite near-term instability score."}
+          </p>
+          <details>
+            <summary>Formula</summary>
+            <p className="muted mini">
+              Regional-war scenario ({weightRole(snapshot?.overall_criticality.formula.regional_war_escalation ?? 0)}), maritime-shock
+              ({weightRole(snapshot?.overall_criticality.formula.maritime_infrastructure_shock ?? 0)}), military force (
+              {weightRole(snapshot?.overall_criticality.formula.military_force ?? 0)}), economic force (
+              {weightRole(snapshot?.overall_criticality.formula.economic_force ?? 0)})
+            </p>
+          </details>
+        </div>
+      </section>
+
+      <section className="panel compact">
+        <h2>Conflict Escalation Likelihood</h2>
+        <div className="battery-shell">
+          <div
+            className="battery-fill"
+            style={{ width: `${snapshot?.conflict_escalation.percent ?? 0}%`, background: severityColor((snapshot?.conflict_escalation.score ?? 0)) }}
+          />
+        </div>
+        <p className="muted mini">
+          Impact: {impactLevel(snapshot?.conflict_escalation.score ?? 0)} | Severity: {snapshot?.conflict_escalation.band ?? "Unknown"} |{" "}
+          {snapshot?.conflict_escalation.meaning ?? ""}
+        </p>
+      </section>
+
+      <section className="panel compact">
+        <h2>Issue Buckets</h2>
+        <div className="chip-grid">
+          {issues.map((issue) => {
+            const selected = selectedIssues.includes(issue.slug);
+            return (
+              <button type="button" key={issue.slug} className={selected ? "chip selected" : "chip"} onClick={() => toggleIssue(issue.slug)}>
+                {issue.label}
+              </button>
+            );
+          })}
+        </div>
+      </section>
+
+      <section className="panel compact">
+        <h2>Impact Lens</h2>
+        <div className="lens-row">
+          <div className="chip-grid">
+            {(["global", "region", "country"] as const).map((lens) => (
+              <button
+                type="button"
+                key={lens}
+                className={lensType === lens ? "chip selected" : "chip"}
+                onClick={() => setLensType(lens)}
+              >
+                {lens}
+              </button>
+            ))}
+          </div>
+          {lensType === "region" && (
+            <select className="lens-select" value={regionFocus} onChange={(event) => setRegionFocus(event.target.value)}>
+              {regionFocusOptions.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          )}
+          {lensType === "country" && (
+            <select className="lens-select" value={countryFocus} onChange={(event) => setCountryFocus(event.target.value)}>
+              {countryFocusOptions.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+        <p className="muted mini">
+          Active lens: {lensType}
+          {activeLensFocus ? ` (${activeLensFocus})` : ""}
+        </p>
+      </section>
+
+      <section className="grid-3">
+        <article className="panel">
+          <h2>State + Trend</h2>
+          <p className="state">{snapshot?.current_state.label ?? "Loading..."}</p>
+          <p className="muted">Confidence: {confidenceLabel(snapshot?.current_state.confidence ?? 0)}</p>
+          <p className={`trend-pill trend-${snapshot?.trend ?? "stable"}`}>{(snapshot?.trend ?? "stable").toUpperCase()}</p>
+          <p className="muted mini">{trendMeaning(snapshot?.current_state.label ?? "", snapshot?.trend ?? "stable")}</p>
+        </article>
+
+        <article className="panel">
+          <h2>Strategic Force Split</h2>
+          <ul className="metric-list">
+            <li><span>Hard power (military + cyber)</span><strong>{impactLevel(bucketSplit.hard)} impact</strong></li>
+            <li><span>Market pressure (economic)</span><strong>{impactLevel(bucketSplit.market)} impact</strong></li>
+            <li><span>Soft power (diplomatic + narrative + ideological)</span><strong>{impactLevel(bucketSplit.soft)} impact</strong></li>
+          </ul>
+        </article>
+
+        <article className="panel">
+          <h2>Consensus Brief</h2>
+          <p className="muted mini">Single consolidated output from the multi-analyst panel.</p>
+          <pre className="analysis-box compact">
+            {snapshot?.expert_review.consensus_brief ?? "Consensus pending..."}
+            {"\n"}
+            {`Next likely scenario: ${snapshot?.next_scenario_forecast.scenario ?? "Unknown"} (${impactLevel(snapshot?.next_scenario_forecast.probability ?? 0)} confidence)`}
+          </pre>
+        </article>
+      </section>
+
+      <section className="panel">
+        <h2>How Scenario Is Built</h2>
+        <p className="muted mini">
+          Consensus uses weighted fusion:
+          {" "}
+          Driving Forces {weightRole(snapshot?.scenario_methods.consensus.weights.driving_forces ?? 0)},
+          {" "}
+          Game Theory {weightRole(snapshot?.scenario_methods.consensus.weights.game_theory ?? 0)},
+          {" "}
+          Chessboard {weightRole(snapshot?.scenario_methods.consensus.weights.chessboard ?? 0)}.
+        </p>
+        <p className="muted mini">
+          Method disagreement: {disagreementBand(snapshot?.scenario_methods.consensus.disagreement_index ?? 0)}
+        </p>
+        <div className="impact-grid">
+          {methodTopRows.map((item) => (
+            <div key={item.method} className="impact-card">
+              <p><strong>{item.method}</strong></p>
+              <p className="muted mini">
+                Top scenario: {item.row?.name ?? "Unknown"} ({impactLevel(item.row?.probability ?? 0)} confidence)
+              </p>
+            </div>
+          ))}
+        </div>
+        <details>
+          <summary>Projected next actor moves ({snapshot?.next_scenario_forecast.horizon_steps ?? 0}-step horizon)</summary>
+          <ul className="signal-list">
+            {(snapshot?.next_scenario_forecast.actor_moves ?? []).map((move) => (
+              <li key={`${move.actor}-${move.move}`}>
+                <p>
+                  {move.actor}: {move.move} ({impactLevel(move.confidence)} confidence)
+                </p>
+              </li>
+            ))}
+          </ul>
+          <p className="muted mini">{snapshot?.next_scenario_forecast.rationale ?? ""}</p>
+        </details>
+      </section>
+
+      <section className="panel">
+        <h2>Consistency Notes</h2>
+        <ul className="signal-list">
+          {(snapshot?.consistency_notes ?? []).length > 0 ? (
+            (snapshot?.consistency_notes ?? []).map((note) => (
+              <li key={note}>
+                <p>{note}</p>
+              </li>
+            ))
+          ) : (
+            <li><p>No contradiction flags detected in current snapshot.</p></li>
+          )}
+        </ul>
+      </section>
+
+      <section className="panel">
+        <h2>Most Likely Next Move</h2>
+        <div className="prediction-strip">
+          <div className="prediction-main">
+            <p className="muted">Scenario</p>
+            <p className="state">{snapshot?.impacts.prediction.most_likely_scenario ?? "Loading..."}</p>
+            <p className="muted">Likelihood: {impactLevel(snapshot?.impacts.prediction.probability ?? 0)}</p>
+          </div>
+          <p className="prediction-brief">{snapshot?.impacts.prediction.brief ?? "Waiting for prediction..."}</p>
+        </div>
+      </section>
+
+      <section className="panel">
+        <h2>Scenario Lattice</h2>
+        <div className="scenario-grid">
+          {(snapshot?.scenarios ?? []).map((scenario) => (
+            <div key={scenario.name} className="scenario-card">
+              <h3>{scenario.name}</h3>
+              <div className="mini-battery">
+                <div
+                  className="mini-battery-fill"
+                  style={{ width: `${Math.round(scenario.probability * 100)}%`, background: severityColor(scenario.probability) }}
+                />
+              </div>
+              <p className="muted mini">Likelihood: {impactLevel(scenario.probability)} | Severity: {severityBandFromScore(scenario.probability)}</p>
+              <p className={scenario.delta_pct >= 0 ? "delta up" : "delta down"}>{scenario.delta_pct >= 0 ? "Rising momentum" : "Cooling momentum"}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className={lensType === "country" ? "grid-1" : "grid-2"}>
+        <article className="panel">
+          <h2>Three-Sector Model Impact</h2>
+          <div className="impact-grid">
+            {(snapshot?.impacts.three_sector_model ?? []).map((item) => (
+              <div key={item.label} className="impact-card">
+                <p>{item.label}</p>
+                <div className="mini-battery"><div className="mini-battery-fill" style={{ width: `${item.percent}%`, background: severityColor(item.severity) }} /></div>
+                <strong>{impactLevel(item.severity)} impact | {item.band} severity</strong>
+                <p className="muted mini">{item.summary}</p>
+              </div>
+            ))}
+          </div>
+        </article>
+
+        <article className="panel">
+          <h2>Maslow Risk Hierarchy</h2>
+          <p className="muted mini">
+            {snapshot?.impacts.maslow_hierarchy.explanation ?? "Hierarchy unavailable."}
+          </p>
+          <ul className="metric-list">
+            {(snapshot?.impacts.maslow_hierarchy.levels ?? []).map((level) => (
+              <li key={level.name}>
+                <span>{level.name}</span>
+                <strong>{impactLevel(level.score)} impact | {level.band}</strong>
+              </li>
+            ))}
+          </ul>
+          <p className="muted mini">
+            Final hierarchy risk: {impactLevel(snapshot?.impacts.maslow_hierarchy.hierarchy_score ?? 0)} impact (
+            {snapshot?.impacts.maslow_hierarchy.band ?? "Unknown"} severity)
+          </p>
+        </article>
+      </section>
+
+      <section className="grid-2">
+        {lensType !== "country" && (
+          <article className="panel">
+            <h2>Region / Worldwide Impact</h2>
+            <div className="impact-grid">
+              {(snapshot?.impacts.regions_world ?? []).map((item) => (
+                <div key={item.label} className="impact-card">
+                  <p>{item.label}</p>
+                  <div className="mini-battery"><div className="mini-battery-fill" style={{ width: `${Math.round(item.severity * 100)}%`, background: severityColor(item.severity) }} /></div>
+                  <strong>{impactLevel(item.severity)} impact | {severityBandFromScore(item.severity)} severity</strong>
+                  <p className="muted mini">{item.summary}</p>
+                </div>
+              ))}
+            </div>
+          </article>
+        )}
+        <article className="panel">
+          <h2>{lensType === "country" ? "Country Focus Impact" : "Country Impact"}</h2>
+          <div className="impact-grid">
+            {(snapshot?.impacts.countries ?? []).map((item) => (
+              <div key={item.label} className="impact-card">
+                <p>{item.label}</p>
+                <div className="mini-battery"><div className="mini-battery-fill" style={{ width: `${Math.round(item.severity * 100)}%`, background: severityColor(item.severity) }} /></div>
+                <strong>{impactLevel(item.severity)} impact | {severityBandFromScore(item.severity)} severity</strong>
+                <p className="muted mini">Exposure: {item.directness ?? "indirect"}</p>
+                <p className="muted mini">{item.summary}</p>
+              </div>
+            ))}
+          </div>
+          <details>
+            <summary>{lensType === "country" ? "Focused Country In Active Regions" : "Countries In Active Regions"}</summary>
+            <div className="region-country-list">
+              {(snapshot?.impacts.countries_by_region ?? []).map((group) => (
+                <div key={group.region} className="region-country-group">
+                  <p><strong>{group.region}</strong></p>
+                  <p className="muted mini">
+                    {group.countries.map((row) => `${row.name} (${row.directness})`).join(", ")}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </details>
+        </article>
+      </section>
+
+      <section className="grid-2">
+        <article className="panel">
+          <h2>Sector Impact</h2>
+          <div className="impact-grid">
+            {(snapshot?.impacts.sectors ?? []).map((item) => (
+              <div key={item.label} className="impact-card">
+                <p>{item.label}</p>
+                <div className="mini-battery"><div className="mini-battery-fill" style={{ width: `${Math.round(item.severity * 100)}%`, background: severityColor(item.severity) }} /></div>
+                <strong>{impactLevel(item.severity)} impact | {severityBandFromScore(item.severity)} severity</strong>
+                <p className="muted mini">{item.summary}</p>
+              </div>
+            ))}
+          </div>
+        </article>
+        <article className="panel">
+          <h2>Economy / Safety / Security / Prices</h2>
+          <div className="impact-grid">
+            {(snapshot?.impacts.indicators ?? []).map((item) => (
+              <div key={item.label} className="impact-card">
+                <p>{item.label}</p>
+                <div className="mini-battery"><div className="mini-battery-fill" style={{ width: `${Math.round(item.severity * 100)}%`, background: severityColor(item.severity) }} /></div>
+                <strong>{impactLevel(item.severity)} impact | {severityBandFromScore(item.severity)} severity</strong>
+                <p className="muted mini">{item.summary}</p>
+              </div>
+            ))}
+          </div>
+        </article>
+      </section>
+
+      <section className="grid-2">
+        <article className="panel">
+          <h2>Multi-Analyst Review Board</h2>
+          <div className="impact-grid">
+            {(snapshot?.expert_review.panel ?? []).map((item) => (
+              <div key={`${item.role}-${item.region}`} className="impact-card">
+                <p>
+                  <strong>{item.role}</strong> ({item.region})
+                </p>
+                <p className="muted mini">{item.view}</p>
+              </div>
+            ))}
+          </div>
+          <p className="muted mini">{snapshot?.expert_review.consensus ?? ""}</p>
+        </article>
+
+        <article className="panel">
+          <h2>Force Heat Buckets</h2>
+          <Image src={forceImageDataUrl} alt="Force pressure visualization" className="viz-image" width={740} height={320} unoptimized />
+        </article>
+      </section>
+
+      <section className="grid-2">
+        <article className="panel">
+          <h2>Live Update Tape</h2>
+          {loading && <p className="muted">Refreshing...</p>}
+          {error && <p className="error">{error}</p>}
+          <ul className="signal-list">
+            {(snapshot?.signals ?? []).slice(0, 8).map((signal) => (
+              <li key={`${signal.link}-${signal.title}`}>
+                <a href={signal.link} target="_blank" rel="noreferrer">{signal.title}</a>
+                <p className="muted">
+                  {signal.source} | {signal.issue} | {signal.published_utc ? new Date(signal.published_utc).toLocaleTimeString() : "time unknown"}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </article>
+      </section>
+
+      <section className="panel">
+        <details>
+          <summary>Expand underlying explanation and prediction</summary>
+          <p>{snapshot?.explanation ?? "No explanation yet."}</p>
+          <p>{snapshot?.prediction ?? "No prediction yet."}</p>
+        </details>
+      </section>
+    </main>
+  );
+}

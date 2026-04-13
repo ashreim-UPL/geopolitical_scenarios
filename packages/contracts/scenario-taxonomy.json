@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "geostate/contracts/scenario-taxonomy.json",
+  "title": "ScenarioTaxonomy",
+  "type": "string",
+  "enum": [
+    "Managed confrontation",
+    "Hybrid pressure equilibrium",
+    "Maritime or infrastructure shock",
+    "Controlled partial reopening or corridor deal",
+    "Regional war escalation",
+    "Internal fragmentation or political rupture",
+    "Negotiated stabilization"
+  ]
+}
+

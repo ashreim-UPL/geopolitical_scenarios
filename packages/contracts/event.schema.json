@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "geostate/contracts/event.schema.json",
+  "title": "ExtractedEvent",
+  "type": "object",
+  "required": [
+    "event_id",
+    "title",
+    "event_type",
+    "timestamp_utc",
+    "location_name",
+    "actors_involved",
+    "source_ids",
+    "extraction_confidence",
+    "severity_score",
+    "novelty_score"
+  ],
+  "properties": {
+    "event_id": { "type": "string", "minLength": 1 },
+    "title": { "type": "string", "minLength": 1 },
+    "event_type": { "type": "string", "minLength": 1 },
+    "timestamp_utc": { "type": "string", "format": "date-time" },
+    "location_name": { "type": "string", "minLength": 1 },
+    "latitude": { "type": "number", "minimum": -90, "maximum": 90 },
+    "longitude": { "type": "number", "minimum": -180, "maximum": 180 },
+    "actors_involved": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "target_type": { "type": "string" },
+    "source_ids": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "extraction_confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "severity_score": { "type": "number", "minimum": 0, "maximum": 1 },
+    "novelty_score": { "type": "number", "minimum": 0, "maximum": 1 },
+    "attribution_status": { "type": "string" },
+    "narrative_tags": { "type": "array", "items": { "type": "string" } },
+    "linked_scenarios": { "type": "array", "items": { "type": "string" } }
+  },
+  "additionalProperties": false
+}
+

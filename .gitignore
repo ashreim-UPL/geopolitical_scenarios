@@ -1,0 +1,35 @@
+# OS and editor
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Node
+node_modules/
+dist/
+build/
+.next/
+coverage/
+
+# Data and logs
+*.log
+*.sqlite
+*.db
+tmp/
+temp/
+
+# Local environment
+.env
+.env.*
+!.env.example
+
