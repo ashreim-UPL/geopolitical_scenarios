@@ -28,9 +28,9 @@ body {
 
 .page-shell {
   width: min(1100px, 92vw);
-  margin: 1.3rem auto 2rem;
+  margin: 1rem auto 1.4rem;
   display: grid;
-  gap: 0.75rem;
+  gap: 0.6rem;
 }
 
 .visual-heavy {
@@ -121,13 +121,13 @@ body {
 .panel {
   background: linear-gradient(160deg, var(--panel), var(--panel-alt));
   border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 0.8rem;
+  border-radius: 12px;
+  padding: 0.65rem;
 }
 
 .panel.compact {
-  padding-top: 0.8rem;
-  padding-bottom: 0.8rem;
+  padding-top: 0.6rem;
+  padding-bottom: 0.6rem;
 }
 
 .compact-risk h2 {
@@ -248,8 +248,9 @@ body {
   background: rgba(15, 23, 35, 0.65);
   color: var(--text);
   border-radius: 999px;
-  padding: 0.3rem 0.62rem;
+  padding: 0.24rem 0.55rem;
   cursor: pointer;
+  font-size: 0.9rem;
 }
 
 .chip.selected {
@@ -274,16 +275,18 @@ body {
 
 .multi-select {
   width: 100%;
-  min-height: 90px;
+  min-height: 68px;
+  max-height: 94px;
   background: rgba(15, 23, 35, 0.8);
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 0.35rem;
+  padding: 0.24rem;
+  line-height: 1.1;
 }
 
 .multi-select option {
-  padding: 0.2rem;
+  padding: 0.12rem;
 }
 
 .signal-list {
@@ -343,7 +346,7 @@ body {
 .prediction-main {
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 0.6rem;
+  padding: 0.45rem;
   background: rgba(15, 23, 35, 0.5);
 }
 
@@ -364,7 +367,7 @@ body {
   border: 1px solid var(--border);
   border-radius: 10px;
   background: rgba(15, 23, 35, 0.45);
-  padding: 0.5rem;
+  padding: 0.42rem;
 }
 
 .impact-card p {
@@ -393,6 +396,28 @@ body {
   background: rgba(15, 23, 35, 0.8);
 }
 
+.monetization-panel h2 {
+  margin-top: 0;
+  margin-bottom: 0.45rem;
+}
+
+.monetization-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.country-map-wrap {
+  margin-bottom: 0.55rem;
+}
+
+.country-map {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(15, 23, 35, 0.72);
+}
+
 @media (max-width: 640px) {
   .page-shell {
     width: 94vw;
@@ -415,6 +440,10 @@ body {
   }
 
   .prediction-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .monetization-grid {
     grid-template-columns: 1fr;
   }
 }

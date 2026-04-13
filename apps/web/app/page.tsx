@@ -15,6 +15,7 @@ type ScenarioRow = {
 };
 
 type ScenarioClusterKey = "escalation" | "maritime_shock" | "hybrid_fragmentation" | "stabilization";
+type LeadStrength = "Fragmented field" | "Contested lead" | "Moderate lead" | "Strong lead";
 
 type SignalRow = {
   title: string;
@@ -111,6 +112,30 @@ const FORCE_LABELS: Record<string, string> = {
 
 const DEFAULT_REGION_FOCUS_OPTIONS = ["Gulf", "MENA", "Europe", "East Asia", "Global shipping lanes"];
 const DEFAULT_COUNTRY_FOCUS_OPTIONS = ["United States", "China", "India"];
+const COUNTRY_COORDS: Record<string, { lat: number; lon: number }> = {
+  "United States": { lat: 39.8, lon: -98.6 },
+  China: { lat: 35.9, lon: 104.2 },
+  India: { lat: 20.6, lon: 78.9 },
+  UAE: { lat: 23.4, lon: 53.8 },
+  Iran: { lat: 32.4, lon: 53.7 },
+  Israel: { lat: 31.0, lon: 35.0 },
+  Lebanon: { lat: 33.9, lon: 35.9 },
+  Syria: { lat: 34.8, lon: 38.9 },
+  Iraq: { lat: 33.2, lon: 43.7 },
+  "Saudi Arabia": { lat: 23.9, lon: 45.1 },
+  Qatar: { lat: 25.3, lon: 51.2 },
+  Kuwait: { lat: 29.3, lon: 47.5 },
+  Oman: { lat: 21.5, lon: 55.9 },
+  Jordan: { lat: 31.2, lon: 36.3 },
+  Egypt: { lat: 26.8, lon: 30.8 },
+  Turkey: { lat: 39.0, lon: 35.2 },
+  Russia: { lat: 61.5, lon: 105.3 },
+  Ukraine: { lat: 49.0, lon: 31.4 },
+  Germany: { lat: 51.2, lon: 10.4 },
+  France: { lat: 46.2, lon: 2.2 },
+  "United Kingdom": { lat: 55.4, lon: -3.4 },
+  Japan: { lat: 36.2, lon: 138.3 },
+};
 
 function severityColor(value: number): string {
   if (value >= 0.8) {
@@ -149,10 +174,10 @@ function severityBandFromScore(score: number): string {
 }
 
 function impactLevel(score: number): "Low" | "Medium" | "High" {
-  if (score >= 0.67) {
+  if (score >= 0.55) {
     return "High";
   }
-  if (score >= 0.34) {
+  if (score >= 0.25) {
     return "Medium";
   }
   return "Low";
@@ -216,6 +241,35 @@ function mapScenarioCluster(name: string): ScenarioClusterKey {
     return "hybrid_fragmentation";
   }
   return "escalation";
+}
+
+function leadStrength(topProbability: number, secondProbability: number): LeadStrength {
+  const gap = topProbability - secondProbability;
+  if (topProbability < 0.34) {
+    return "Fragmented field";
+  }
+  if (gap < 0.05) {
+    return "Contested lead";
+  }
+  if (topProbability >= 0.5 && gap >= 0.12) {
+    return "Strong lead";
+  }
+  return "Moderate lead";
+}
+
+function normalizedCountryName(name: string): string {
+  if (name === "United Arab Emirates") {
+    return "UAE";
+  }
+  return name;
+}
+
+function worldX(lon: number): number {
+  return ((lon + 180) / 360) * 880;
+}
+
+function worldY(lat: number): number {
+  return ((90 - lat) / 180) * 360;
 }
 
 const CLUSTER_META: Record<ScenarioClusterKey, { title: string; subtitle: string }> = {
@@ -379,6 +433,45 @@ export default function HomePage() {
     });
   }, [snapshot]);
 
+  const topScenarioLead = useMemo(() => {
+    const ranked = [...(snapshot?.scenarios ?? [])].sort((a, b) => b.probability - a.probability);
+    const top = ranked[0];
+    const second = ranked[1];
+    return {
+      topProbability: top?.probability ?? 0,
+      secondProbability: second?.probability ?? 0,
+      label: leadStrength(top?.probability ?? 0, second?.probability ?? 0),
+    };
+  }, [snapshot]);
+
+  const visibleCountries = useMemo(() => {
+    const all = snapshot?.impacts.countries ?? [];
+    if (lensType !== "country") {
+      return all;
+    }
+    const focus = countryFocus.toLowerCase();
+    return all.filter((item) => normalizedCountryName(item.label).toLowerCase() === focus);
+  }, [snapshot, lensType, countryFocus]);
+
+  const countryMapPoints = useMemo(() => {
+    return visibleCountries
+      .map((item) => {
+        const normalized = normalizedCountryName(item.label);
+        const coord = COUNTRY_COORDS[normalized];
+        if (!coord) {
+          return null;
+        }
+        return {
+          label: item.label,
+          severity: item.severity,
+          directness: item.directness ?? "indirect",
+          x: worldX(coord.lon),
+          y: worldY(coord.lat),
+        };
+      })
+      .filter((item): item is { label: string; severity: number; directness: string; x: number; y: number } => item !== null);
+  }, [visibleCountries]);
+
   useEffect(() => {
     const loadCatalog = async () => {
       const response = await fetch(`${apiBase}/v1/issues`);
@@ -497,7 +590,7 @@ export default function HomePage() {
       <section className="panel compact">
         <h2>Issue Buckets</h2>
         <p className="muted mini">Multi-select list (Ctrl/Cmd + Click)</p>
-        <select className="multi-select" multiple value={selectedIssues} onChange={handleIssueMultiSelect}>
+        <select className="multi-select" size={4} multiple value={selectedIssues} onChange={handleIssueMultiSelect}>
           {issues.map((issue) => (
             <option key={issue.slug} value={issue.slug}>
               {issue.label}
@@ -545,6 +638,27 @@ export default function HomePage() {
           Active lens: {lensType}
           {activeLensFocus ? ` (${activeLensFocus})` : ""}
         </p>
+      </section>
+
+      <section className="panel compact monetization-panel">
+        <h2>Premium Intelligence Modules</h2>
+        <div className="monetization-grid">
+          <div className="impact-card">
+            <p><strong>Analyst Pro</strong></p>
+            <p className="muted mini">Saved watchlists, custom alerts, and export packs.</p>
+            <button type="button" className="chip selected">Start trial</button>
+          </div>
+          <div className="impact-card">
+            <p><strong>Team Ops</strong></p>
+            <p className="muted mini">Shared boards, consensus workflow, and approvals.</p>
+            <button type="button" className="chip">Request demo</button>
+          </div>
+          <div className="impact-card">
+            <p><strong>API Access</strong></p>
+            <p className="muted mini">Programmatic scenarios, risk feeds, and webhooks.</p>
+            <button type="button" className="chip">Contact sales</button>
+          </div>
+        </div>
       </section>
 
       <section className="grid-3">
@@ -640,7 +754,8 @@ export default function HomePage() {
           <div className="prediction-main">
             <p className="muted">Scenario</p>
             <p className="state">{snapshot?.impacts.prediction.most_likely_scenario ?? "Loading..."}</p>
-            <p className="muted">Likelihood: {impactLevel(snapshot?.impacts.prediction.probability ?? 0)}</p>
+            <p className="muted">Lead strength: {topScenarioLead.label}</p>
+            <p className="muted mini">This is the relative leader among tracked paths.</p>
           </div>
           <p className="prediction-brief">{snapshot?.impacts.prediction.brief ?? "Waiting for prediction..."}</p>
         </div>
@@ -735,8 +850,30 @@ export default function HomePage() {
         )}
         <article className="panel">
           <h2>{lensType === "country" ? "Country Focus Impact" : "Country Impact"}</h2>
+          <div className="country-map-wrap">
+            <svg viewBox="0 0 880 360" className="country-map" role="img" aria-label="Country impact map">
+              <rect x="0" y="0" width="880" height="360" rx="10" fill="#0f1723" />
+              <g opacity="0.18" stroke="#9fb3cc" strokeWidth="1">
+                <line x1="0" y1="90" x2="880" y2="90" />
+                <line x1="0" y1="180" x2="880" y2="180" />
+                <line x1="0" y1="270" x2="880" y2="270" />
+                <line x1="220" y1="0" x2="220" y2="360" />
+                <line x1="440" y1="0" x2="440" y2="360" />
+                <line x1="660" y1="0" x2="660" y2="360" />
+              </g>
+              {countryMapPoints.map((point) => (
+                <g key={`map-${point.label}`} transform={`translate(${point.x}, ${point.y})`}>
+                  <circle r={point.directness === "direct" ? 8 : 6} fill={severityColor(point.severity)} stroke="#e2e8f0" strokeWidth="1" />
+                  <text x="10" y="-10" fill="#e2e8f0" fontSize="12">
+                    {point.label}
+                  </text>
+                </g>
+              ))}
+            </svg>
+            <p className="muted mini">Color = severity, larger marker = direct exposure.</p>
+          </div>
           <div className="impact-grid">
-            {(snapshot?.impacts.countries ?? []).map((item) => (
+            {visibleCountries.map((item) => (
               <div key={item.label} className="impact-card">
                 <p>{item.label}</p>
                 <div className="mini-battery"><div className="mini-battery-fill" style={{ width: `${Math.round(item.severity * 100)}%`, background: severityColor(item.severity) }} /></div>
@@ -745,6 +882,11 @@ export default function HomePage() {
                 <p className="muted mini">{item.summary}</p>
               </div>
             ))}
+            {visibleCountries.length === 0 && (
+              <div className="impact-card">
+                <p className="muted mini">No mapped country impact data for the current selection.</p>
+              </div>
+            )}
           </div>
           <details>
             <summary>{lensType === "country" ? "Focused Country In Active Regions" : "Countries In Active Regions"}</summary>
