@@ -264,14 +264,6 @@ function normalizedCountryName(name: string): string {
   return name;
 }
 
-function worldX(lon: number): number {
-  return ((lon + 180) / 360) * 880;
-}
-
-function worldY(lat: number): number {
-  return ((90 - lat) / 180) * 360;
-}
-
 const CLUSTER_META: Record<ScenarioClusterKey, { title: string; subtitle: string }> = {
   escalation: {
     title: "Escalation Path",
@@ -465,12 +457,51 @@ export default function HomePage() {
           label: item.label,
           severity: item.severity,
           directness: item.directness ?? "indirect",
-          x: worldX(coord.lon),
-          y: worldY(coord.lat),
+          lon: coord.lon,
+          lat: coord.lat,
         };
       })
-      .filter((item): item is { label: string; severity: number; directness: string; x: number; y: number } => item !== null);
+      .filter((item): item is { label: string; severity: number; directness: string; lon: number; lat: number } => item !== null);
   }, [visibleCountries]);
+
+  const mapPlotPoints = useMemo(() => {
+    if (countryMapPoints.length === 0) {
+      return [];
+    }
+    const lons = countryMapPoints.map((p) => p.lon);
+    const lats = countryMapPoints.map((p) => p.lat);
+    let minLon = Math.min(...lons);
+    let maxLon = Math.max(...lons);
+    let minLat = Math.min(...lats);
+    let maxLat = Math.max(...lats);
+
+    const lonSpan = Math.max(maxLon - minLon, 20);
+    const latSpan = Math.max(maxLat - minLat, 12);
+    const lonPad = lonSpan * 0.35;
+    const latPad = latSpan * 0.35;
+    minLon -= lonPad;
+    maxLon += lonPad;
+    minLat -= latPad;
+    maxLat += latPad;
+
+    const width = 880;
+    const height = 360;
+    const innerPad = 24;
+    const plotWidth = width - innerPad * 2;
+    const plotHeight = height - innerPad * 2;
+
+    return countryMapPoints.map((p, idx) => {
+      const x = innerPad + ((p.lon - minLon) / (maxLon - minLon)) * plotWidth;
+      const y = innerPad + ((maxLat - p.lat) / (maxLat - minLat)) * plotHeight;
+      return {
+        ...p,
+        x,
+        y,
+        labelDx: 10,
+        labelDy: idx % 2 === 0 ? -10 : 14,
+      };
+    });
+  }, [countryMapPoints]);
 
   useEffect(() => {
     const loadCatalog = async () => {
@@ -861,33 +892,29 @@ export default function HomePage() {
                 <line x1="440" y1="0" x2="440" y2="360" />
                 <line x1="660" y1="0" x2="660" y2="360" />
               </g>
-              {countryMapPoints.map((point) => (
+              {mapPlotPoints.map((point) => (
                 <g key={`map-${point.label}`} transform={`translate(${point.x}, ${point.y})`}>
                   <circle r={point.directness === "direct" ? 8 : 6} fill={severityColor(point.severity)} stroke="#e2e8f0" strokeWidth="1" />
-                  <text x="10" y="-10" fill="#e2e8f0" fontSize="12">
+                  <text x={point.labelDx} y={point.labelDy} fill="#e2e8f0" fontSize="12">
                     {point.label}
                   </text>
                 </g>
               ))}
             </svg>
-            <p className="muted mini">Color = severity, larger marker = direct exposure.</p>
+            <p className="muted mini">Auto-focused view. Color = severity, larger marker = direct exposure.</p>
           </div>
-          <div className="impact-grid">
-            {visibleCountries.map((item) => (
-              <div key={item.label} className="impact-card">
-                <p>{item.label}</p>
-                <div className="mini-battery"><div className="mini-battery-fill" style={{ width: `${Math.round(item.severity * 100)}%`, background: severityColor(item.severity) }} /></div>
-                <strong>{impactLevel(item.severity)} impact | {severityBandFromScore(item.severity)} severity</strong>
-                <p className="muted mini">Exposure: {item.directness ?? "indirect"}</p>
-                <p className="muted mini">{item.summary}</p>
-              </div>
-            ))}
-            {visibleCountries.length === 0 && (
-              <div className="impact-card">
-                <p className="muted mini">No mapped country impact data for the current selection.</p>
-              </div>
-            )}
-          </div>
+          <ul className="map-legend-list">
+            {[...visibleCountries]
+              .sort((a, b) => b.severity - a.severity)
+              .map((item) => (
+                <li key={`legend-${item.label}`}>
+                  <span className="legend-dot" style={{ background: severityColor(item.severity) }} />
+                  <span className="legend-name">{item.label}</span>
+                  <span className="legend-meta">{impactLevel(item.severity)} | {severityBandFromScore(item.severity)} | {item.directness ?? "indirect"}</span>
+                </li>
+              ))}
+          </ul>
+          {visibleCountries.length === 0 && <p className="muted mini">No mapped country impact data for the current selection.</p>}
           <details>
             <summary>{lensType === "country" ? "Focused Country In Active Regions" : "Countries In Active Regions"}</summary>
             <div className="region-country-list">
