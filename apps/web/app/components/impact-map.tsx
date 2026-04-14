@@ -66,9 +66,11 @@ export default function ImpactMap({ points, lensType, lensFocus }: ImpactMapProp
   const regionPreset = REGION_VIEW[lensFocus];
   const defaultCenter: [number, number] = [20, 10];
   const defaultZoom = lensType === "global" ? 2 : 3;
+  const mapKey = `${lensType}:${lensFocus}:${points.map((p) => `${p.label}-${p.lat}-${p.lon}`).join("|")}`;
 
   return (
     <MapContainer
+      key={mapKey}
       className="country-map"
       center={regionPreset?.center ?? defaultCenter}
       zoom={regionPreset?.zoom ?? defaultZoom}
@@ -96,4 +98,3 @@ export default function ImpactMap({ points, lensType, lensFocus }: ImpactMapProp
     </MapContainer>
   );
 }
-
