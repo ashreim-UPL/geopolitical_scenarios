@@ -619,14 +619,78 @@ def _lens_multiplier(group: str, label: str, *, lens: str, focus: str | None) ->
             }:
                 return 1.14
             return 0.96
+        if group == "three_sector_model":
+            if focus_lower in {"gulf", "mena", "levant"} and label == "Tertiary Sector":
+                return 1.16
+            if focus_lower in {"gulf", "mena", "levant"} and label == "Primary Sector":
+                return 1.08
+            return 0.97
+        if group == "maslow_levels":
+            if label.startswith("Safety"):
+                return 1.12
+            if focus_lower in {"gulf", "mena", "levant"} and label.startswith("Physiological"):
+                return 1.08
+            return 0.98
 
     if lens == "country":
         if group == "countries":
             if focus_lower and focus_lower == label_lower:
                 return 1.35
             return 0.88
-        if group in {"sectors", "indicators"}:
-            return 1.1 if label in {"Technology", "Economy", "Prices", "Security"} else 0.95
+        if group == "sectors":
+            if focus_lower in {"uae", "saudi arabia", "qatar", "bahrain", "oman", "kuwait"} and label in {
+                "Hospitality",
+                "Tourism",
+                "F&B, Restaurants, Nightlife",
+                "Luxury Shopping",
+                "Real Estate",
+            }:
+                return 1.24
+            if focus_lower in {"india", "bangladesh", "pakistan", "egypt"} and label in {
+                "Energy",
+                "Shipping & Logistics",
+                "Food & Agriculture",
+            }:
+                return 1.22
+            if focus_lower in {"ukraine", "russia", "iran", "israel", "syria", "iraq", "taiwan"} and label in {
+                "Energy",
+                "Shipping & Logistics",
+                "Technology",
+            }:
+                return 1.2
+            return 0.94
+        if group == "indicators":
+            if focus_lower in {"ukraine", "russia", "iran", "israel", "syria", "iraq", "taiwan"} and label in {"Safety", "Security"}:
+                return 1.27
+            if focus_lower in {"uae", "saudi arabia", "qatar", "bahrain", "oman", "kuwait"} and label in {"Economy", "Prices"}:
+                return 1.18
+            if focus_lower in {"india", "bangladesh", "pakistan", "egypt"} and label in {"Prices", "Economy"}:
+                return 1.16
+            return 0.95
+        if group == "three_sector_model":
+            if focus_lower in {"uae", "saudi arabia", "qatar", "bahrain", "oman", "kuwait"}:
+                if label == "Tertiary Sector":
+                    return 1.26
+                if label == "Primary Sector":
+                    return 1.08
+                return 1.02
+            if focus_lower in {"ukraine", "russia", "iran", "israel", "syria", "iraq", "taiwan"}:
+                if label in {"Primary Sector", "Secondary Sector"}:
+                    return 1.2
+                return 0.95
+            return 1.0
+        if group == "maslow_levels":
+            if focus_lower in {"ukraine", "russia", "iran", "israel", "syria", "iraq", "taiwan"}:
+                if label.startswith("Safety"):
+                    return 1.3
+                if label.startswith("Physiological"):
+                    return 1.12
+            if focus_lower in {"uae", "saudi arabia", "qatar", "bahrain", "oman", "kuwait"}:
+                if label.startswith("Future Capacity"):
+                    return 1.14
+                if label.startswith("Safety"):
+                    return 1.1
+            return 0.96
         if group == "regions_world":
             return 0.95
     return 1.0
@@ -738,6 +802,36 @@ def _build_maslow_risk_hierarchy(force_scores: dict[str, float], scenario_lookup
         "percent": hierarchy_band["percent"],
         "band": hierarchy_band["label"],
         "explanation": "Maslow-style risk hierarchy where Safety is heavily weighted and dominant-risk adjusted.",
+    }
+
+
+def _reweight_maslow_hierarchy(hierarchy: dict[str, Any], *, lens: str, focus: str | None) -> dict[str, Any]:
+    adjusted_levels: list[dict[str, Any]] = []
+    for level in hierarchy.get("levels", []):
+        multiplier = _lens_multiplier("maslow_levels", level["name"], lens=lens, focus=focus)
+        adjusted_score = min(level["score"] * multiplier, 1.0)
+        band = _risk_band(adjusted_score)
+        adjusted_levels.append(
+            {
+                **level,
+                "score": round(adjusted_score, 3),
+                "percent": band["percent"],
+                "band": band["label"],
+            }
+        )
+
+    weighted_sum = sum(item["score"] * item["weight"] for item in adjusted_levels)
+    dominant = max((item["score"] for item in adjusted_levels), default=0.0)
+    hierarchy_score = min((weighted_sum * 0.6) + (dominant * 0.4), 1.0)
+    hierarchy_band = _risk_band(hierarchy_score)
+    return {
+        **hierarchy,
+        "levels": adjusted_levels,
+        "weighted_score": round(weighted_sum, 4),
+        "dominant_score": round(dominant, 4),
+        "hierarchy_score": round(hierarchy_score, 4),
+        "percent": hierarchy_band["percent"],
+        "band": hierarchy_band["label"],
     }
 
 
@@ -967,8 +1061,13 @@ def _build_impacts(
         "probability": round(top_prob, 4),
         "brief": f"Most likely near-term path is {top_scenario.lower()} with layered economic and security spillovers.",
     }
-    three_sector = _build_three_sector_model(force_scores, scenario_lookup)
-    maslow = _build_maslow_risk_hierarchy(force_scores, scenario_lookup)
+    three_sector = _reweight_impact_group(
+        _build_three_sector_model(force_scores, scenario_lookup),
+        group="three_sector_model",
+        lens=lens,
+        focus=focus,
+    )
+    maslow = _reweight_maslow_hierarchy(_build_maslow_risk_hierarchy(force_scores, scenario_lookup), lens=lens, focus=focus)
     regions_weighted = _reweight_impact_group(region_bases, group="regions_world", lens=lens, focus=focus)
     countries_weighted = _reweight_impact_group(country_cards, group="countries", lens=lens, focus=focus)
     if lens == "country" and focus:

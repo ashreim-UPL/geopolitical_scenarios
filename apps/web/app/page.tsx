@@ -931,9 +931,28 @@ export default function HomePage() {
         )}
         <article className="panel">
           <h2>{lensType === "country" ? "Country Focus Impact" : "Country Impact"}</h2>
-          <div className="country-map-wrap">
-            <ImpactMap points={countryMapPoints} lensType={lensType} lensFocus={activeLensFocus} />
-            <p className="muted mini">OpenStreetMap overlay. Color = severity, larger marker = direct exposure.</p>
+          <div className="map-live-grid">
+            <div className="country-map-wrap">
+              <ImpactMap points={countryMapPoints} lensType={lensType} lensFocus={activeLensFocus} />
+              <p className="muted mini">OpenStreetMap overlay. Color = severity, larger marker = direct exposure.</p>
+            </div>
+            <div className="live-tape-box">
+              <h3>Live Update Tape</h3>
+              {loading && <p className="muted mini">Refreshing...</p>}
+              {error && <p className="error">{error}</p>}
+              <div className="live-tape-scroll">
+                <ul className="signal-list">
+                  {(snapshot?.signals ?? []).map((signal) => (
+                    <li key={`${signal.link}-${signal.title}`}>
+                      <a href={signal.link} target="_blank" rel="noreferrer">{signal.title}</a>
+                      <p className="muted">
+                        {signal.source} | {signal.issue} | {signal.published_utc ? new Date(signal.published_utc).toLocaleTimeString() : "time unknown"}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
           </div>
           <ul className="map-legend-list">
             {[...visibleCountries]
@@ -1011,24 +1030,6 @@ export default function HomePage() {
         <article className="panel">
           <h2>Force Heat Buckets</h2>
           <Image src={forceImageDataUrl} alt="Force pressure visualization" className="viz-image" width={740} height={320} unoptimized />
-        </article>
-      </section>
-
-      <section className="grid-2">
-        <article className="panel">
-          <h2>Live Update Tape</h2>
-          {loading && <p className="muted">Refreshing...</p>}
-          {error && <p className="error">{error}</p>}
-          <ul className="signal-list">
-            {(snapshot?.signals ?? []).slice(0, 8).map((signal) => (
-              <li key={`${signal.link}-${signal.title}`}>
-                <a href={signal.link} target="_blank" rel="noreferrer">{signal.title}</a>
-                <p className="muted">
-                  {signal.source} | {signal.issue} | {signal.published_utc ? new Date(signal.published_utc).toLocaleTimeString() : "time unknown"}
-                </p>
-              </li>
-            ))}
-          </ul>
         </article>
       </section>
 
