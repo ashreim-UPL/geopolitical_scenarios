@@ -1,6 +1,7 @@
 "use client";
 
 import Image from "next/image";
+import Link from "next/link";
 import dynamic from "next/dynamic";
 import { useEffect, useMemo, useState } from "react";
 
@@ -24,6 +25,12 @@ type SignalRow = {
   link: string;
   issue: string;
   published_utc: string | null;
+  intelligence_metadata?: {
+    provider: string;
+    reasoning_tokens: string;
+    confidence_score: number;
+    model_version: string;
+  };
 };
 
 type Snapshot = {
@@ -70,6 +77,77 @@ type Snapshot = {
     meaning: string;
   };
   consistency_notes: string[];
+  major_conflicts?: {
+    issue_slug: string;
+    issue_label: string;
+    conflict_name: string;
+    primary_regions: string[];
+    principal_actors: string[];
+    severity: number;
+    band: string;
+    percent: number;
+    rationale: string;
+  }[];
+  pestel_framework?: {
+    dimension: string;
+    severity: number;
+    band: string;
+    percent: number;
+  }[];
+  lens_alignment?: {
+    active_lens: string;
+    sections: Record<string, boolean>;
+    notes: string;
+  };
+  analysis_provenance?: {
+    tier_resolution_order: string[];
+    active_provider: string;
+    active_tier: string;
+    llm_enabled: boolean;
+    model_version: string;
+    areas: { area: string; engine: string }[];
+    notes: string;
+  };
+  scenario_visual?: {
+    image_data_url: string | null;
+    provider: string;
+    model: string;
+    generated: boolean;
+  };
+  creative_prediction?: {
+    story_text: string;
+    visual_prompt: string;
+    scenarios_payload: Record<string, unknown>;
+    provider: string;
+    model: string;
+    generated: boolean;
+  };
+  update_policy?: {
+    recommended_interval_seconds: number;
+    rationale: string;
+    next_refresh_utc: string;
+  };
+  cache?: {
+    cache_hit: boolean;
+    cached_at_utc: string;
+  };
+  snapshot_history?: {
+    generated_utc: string;
+    mode: string;
+    top_scenario: string;
+    overall_criticality: number;
+    conflict_escalation: number;
+  }[];
+  intelligence_metadata?: {
+    provider: string;
+    reasoning_tokens: string;
+    confidence_score: number;
+    model_version: string;
+  };
+  alternative_intelligence?: {
+    disclaimer: string;
+    sources: { name: string; type: string; description: string }[];
+  };
   expert_review: {
     panel: { role: string; region: string; view: string }[];
     consensus: string;
@@ -269,6 +347,26 @@ function normalizedCountryName(name: string): string {
   return name;
 }
 
+function canonicalRegionName(name: string): string {
+  const normalized = name.trim().toLowerCase();
+  if (normalized === "gulf region") {
+    return "Gulf";
+  }
+  if (normalized === "eastern europe") {
+    return "Eastern Europe";
+  }
+  if (normalized === "east asia") {
+    return "East Asia";
+  }
+  if (normalized === "global shipping lanes") {
+    return "Global shipping lanes";
+  }
+  if (normalized === "eu energy consumers") {
+    return "EU energy consumers";
+  }
+  return name;
+}
+
 const CLUSTER_META: Record<ScenarioClusterKey, { title: string; subtitle: string }> = {
   escalation: {
     title: "Escalation Path",
@@ -312,6 +410,28 @@ function buildForceSvg(forces: { name: string; score: number }[]): string {
 <rect width="100%" height="100%" fill="#0f1723"/>
 <text x="20" y="24" fill="#d1fae5" font-size="16">Force Buckets (Probability Split)</text>
 ${bars}
+</svg>`;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+function buildScenarioVisualSvg(scenario: string, probability: number): string {
+  const pct = Math.round(Math.max(0, Math.min(1, probability)) * 100);
+  const color = pct >= 70 ? "#ef4444" : pct >= 45 ? "#f59e0b" : "#22c55e";
+  const safeScenario = scenario || "Scenario pending";
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="860" height="260">
+<defs>
+  <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+    <stop offset="0%" stop-color="#071426" />
+    <stop offset="100%" stop-color="#13263f" />
+  </linearGradient>
+</defs>
+<rect width="100%" height="100%" rx="14" fill="url(#bg)"/>
+<circle cx="160" cy="130" r="78" fill="rgba(255,255,255,0.05)" stroke="${color}" stroke-width="3"/>
+<circle cx="160" cy="130" r="44" fill="${color}" opacity="0.3"/>
+<text x="160" y="138" fill="#f8fafc" font-size="34" font-weight="700" text-anchor="middle">${pct}%</text>
+<text x="290" y="90" fill="#dbeafe" font-size="16" font-weight="600">Predicted near-term scenario</text>
+<text x="290" y="122" fill="#f8fafc" font-size="28" font-weight="700">${safeScenario}</text>
+<text x="290" y="152" fill="#93c5fd" font-size="15">AI-style visualization generated from active signal state + scenario engine output.</text>
 </svg>`;
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 }
@@ -376,9 +496,9 @@ function GaugeDial({
         <text x="88" y="74" textAnchor="middle" className="gauge-percent">{percent}</text>
         <text x="88" y="88" textAnchor="middle" className="gauge-unit">/100</text>
         <text x="88" y="101" textAnchor="middle" className="gauge-band">{band}</text>
-        <text x="16" y="120" className="gauge-scale">0</text>
-        <text x="84" y="120" className="gauge-scale">50</text>
-        <text x="154" y="120" className="gauge-scale">100</text>
+        <text x="38" y="108" className="gauge-scale">0</text>
+        <text x="88" y="112" className="gauge-scale" textAnchor="middle">50</text>
+        <text x="138" y="108" className="gauge-scale" textAnchor="end">100</text>
       </svg>
       <div className={`gauge-trend ${trendClass}`}>
         <span className="sparkline" />
@@ -402,6 +522,8 @@ export default function HomePage() {
   const [regionFocus, setRegionFocus] = useState<string>("Gulf");
   const [countryFocus, setCountryFocus] = useState<string>("India");
   const [countryFocusPool, setCountryFocusPool] = useState<string[]>(DEFAULT_COUNTRY_FOCUS_OPTIONS);
+  const [showIntelligenceMap, setShowIntelligenceMap] = useState(false);
+  const [localAiEnhancement, setLocalAiEnhancement] = useState(true);
 
   const selectedIssueParam = useMemo(() => selectedIssues.join(","), [selectedIssues]);
   const activeLensFocus = useMemo(() => {
@@ -414,10 +536,36 @@ export default function HomePage() {
     return "";
   }, [lensType, regionFocus, countryFocus]);
   const forceImageDataUrl = useMemo(() => buildForceSvg(snapshot?.forces ?? []), [snapshot?.forces]);
+  const scenarioVisualDataUrl = useMemo(
+    () =>
+      snapshot?.scenario_visual?.image_data_url ??
+      buildScenarioVisualSvg(snapshot?.next_scenario_forecast.scenario ?? "Scenario pending", snapshot?.next_scenario_forecast.probability ?? 0),
+    [snapshot?.scenario_visual?.image_data_url, snapshot?.next_scenario_forecast.scenario, snapshot?.next_scenario_forecast.probability]
+  );
+  const shortTimelineText = useMemo(() => {
+    const scenario = snapshot?.next_scenario_forecast.scenario ?? "Scenario pending";
+    const ranked = [...(snapshot?.scenarios ?? [])].sort((a, b) => b.probability - a.probability);
+    const lead = leadStrength(ranked[0]?.probability ?? 0, ranked[1]?.probability ?? 0);
+    const steps = snapshot?.next_scenario_forecast.horizon_steps ?? 4;
+    return `Most likely path: ${scenario}. Lead status: ${lead}. Timeline: next 24-72 hours for immediate signaling, and 3-14 days for structural spillover confirmation (modeled in ${steps}-step horizon).`;
+  }, [snapshot?.next_scenario_forecast.scenario, snapshot?.next_scenario_forecast.horizon_steps, snapshot?.scenarios]);
+  const creativeStoryPreview = useMemo(() => {
+    const text = (snapshot?.creative_prediction?.story_text ?? "").replace(/\s+/g, " ").trim();
+    if (!text) {
+      return snapshot?.impacts.prediction.brief ?? "Prediction brief pending.";
+    }
+    return text;
+  }, [snapshot?.creative_prediction?.story_text, snapshot?.impacts.prediction.brief]);
+  const scenarioImageStatus = useMemo(() => {
+    if (snapshot?.scenario_visual?.generated && snapshot?.scenario_visual?.image_data_url) {
+      return `AI image generated (${snapshot?.scenario_visual.provider}/${snapshot?.scenario_visual.model})`;
+    }
+    return "AI image unavailable; showing fallback visual. Check OPENAI_API_KEY and restart API.";
+  }, [snapshot?.scenario_visual?.generated, snapshot?.scenario_visual?.image_data_url, snapshot?.scenario_visual?.provider, snapshot?.scenario_visual?.model]);
   const regionFocusOptions = useMemo(() => {
-    const fromSnapshot = (snapshot?.impacts.regions_world ?? []).map((item) => item.label);
-    const merged = [...DEFAULT_REGION_FOCUS_OPTIONS, ...fromSnapshot];
-    return Array.from(new Set(merged));
+    const fromSnapshot = (snapshot?.impacts.regions_world ?? []).map((item) => canonicalRegionName(item.label));
+    const merged = [...DEFAULT_REGION_FOCUS_OPTIONS.map(canonicalRegionName), ...fromSnapshot];
+    return Array.from(new Set(merged)).sort((a, b) => a.localeCompare(b));
   }, [snapshot]);
   const countryFocusOptions = useMemo(() => {
     return Array.from(new Set(countryFocusPool)).sort((a, b) => a.localeCompare(b));
@@ -515,12 +663,23 @@ export default function HomePage() {
 
   const visibleCountries = useMemo(() => {
     const all = snapshot?.impacts.countries ?? [];
+    if (lensType === "region") {
+      const targetRegion = canonicalRegionName(regionFocus).toLowerCase();
+      const regionGroup = (snapshot?.impacts.countries_by_region ?? []).find(
+        (group) => canonicalRegionName(group.region).toLowerCase() === targetRegion
+      );
+      if (!regionGroup) {
+        return all;
+      }
+      const allowed = new Set(regionGroup.countries.map((entry) => normalizedCountryName(entry.name).toLowerCase()));
+      return all.filter((item) => allowed.has(normalizedCountryName(item.label).toLowerCase()));
+    }
     if (lensType !== "country") {
       return all;
     }
     const focus = countryFocus.toLowerCase();
     return all.filter((item) => normalizedCountryName(item.label).toLowerCase() === focus);
-  }, [snapshot, lensType, countryFocus]);
+  }, [snapshot, lensType, countryFocus, regionFocus]);
 
   const countryMapPoints = useMemo(() => {
     return visibleCountries
@@ -566,6 +725,7 @@ export default function HomePage() {
             use_live: true,
             lens: lensType,
             focus: activeLensFocus || null,
+            local_ai_enabled: localAiEnhancement,
           }),
         });
         if (!response.ok) {
@@ -580,14 +740,15 @@ export default function HomePage() {
       }
     };
     void fetchSnapshot();
-  }, [selectedIssueParam, selectedIssues, lensType, activeLensFocus]);
+  }, [selectedIssueParam, selectedIssues, lensType, activeLensFocus, localAiEnhancement]);
 
   useEffect(() => {
     if (!selectedIssueParam) {
       return undefined;
     }
+    const intervalSeconds = snapshot?.update_policy?.recommended_interval_seconds ?? 900;
     const source = new EventSource(
-      `${apiBase}/v1/analyze/stream?issues=${encodeURIComponent(selectedIssueParam)}&use_live=true&lens=${encodeURIComponent(lensType)}&focus=${encodeURIComponent(activeLensFocus)}&interval_seconds=30`
+      `${apiBase}/v1/analyze/stream?issues=${encodeURIComponent(selectedIssueParam)}&use_live=true&lens=${encodeURIComponent(lensType)}&focus=${encodeURIComponent(activeLensFocus)}&local_ai_enabled=${localAiEnhancement ? "true" : "false"}&interval_seconds=${intervalSeconds}`
     );
     source.addEventListener("snapshot", (event) => {
       const parsed = JSON.parse((event as MessageEvent).data) as Snapshot;
@@ -595,7 +756,7 @@ export default function HomePage() {
     });
     source.onerror = () => source.close();
     return () => source.close();
-  }, [selectedIssueParam, lensType, activeLensFocus]);
+  }, [selectedIssueParam, lensType, activeLensFocus, localAiEnhancement, snapshot?.update_policy?.recommended_interval_seconds]);
 
   const toggleIssue = (slug: string) => {
     setSelectedIssues((prev) => {
@@ -614,6 +775,17 @@ export default function HomePage() {
           <h1>One-page scenario command dashboard</h1>
           <p className="subcopy">
             <span className="live-dot" /> {snapshot?.mode?.toUpperCase() ?? "LIVE"} feed | {snapshot?.generated_utc ? new Date(snapshot.generated_utc).toLocaleString() : "updating"}
+          </p>
+          <p className="muted mini">
+            AI engine: {snapshot?.analysis_provenance?.active_provider ?? "deterministic"} ({snapshot?.analysis_provenance?.model_version ?? "heuristic-v1"}) |
+            Image engine: {snapshot?.scenario_visual?.provider ?? "none"} ({snapshot?.scenario_visual?.model ?? "none"}) |
+            Refresh: every {Math.round((snapshot?.update_policy?.recommended_interval_seconds ?? 900) / 60)} min
+          </p>
+          <p className="muted mini">
+            Last saved snapshot: {snapshot?.cache?.cached_at_utc ? new Date(snapshot.cache.cached_at_utc).toLocaleString() : "pending"} | Next refresh target: {snapshot?.update_policy?.next_refresh_utc ? new Date(snapshot.update_policy.next_refresh_utc).toLocaleString() : "pending"}
+          </p>
+          <p className="hero-alt-link-wrap">
+            <Link href="/alternative" className="hero-alt-link">OPEN ALTERNATIVE NARRATIVE DASHBOARD</Link>
           </p>
         </div>
         <div className="hero-gauges">
@@ -718,6 +890,48 @@ export default function HomePage() {
         </div>
       </section>
 
+      <section className="panel compact">
+        <h2>Predicted Scenario Snapshot</h2>
+        <p className="muted mini">{scenarioImageStatus}</p>
+        <div className="prediction-visual-grid">
+          <Image src={scenarioVisualDataUrl} alt="Predicted scenario AI-style visualization" className="viz-image prediction-image" width={860} height={260} unoptimized />
+          <div className="prediction-timeline">
+            <p className="prediction-summary">{shortTimelineText}</p>
+            <p className="muted prediction-summary">{creativeStoryPreview}</p>
+          </div>
+        </div>
+      </section>
+
+      <section className="panel compact">
+        <details>
+          <summary>Configuration</summary>
+          <div className="metric-list">
+            <label>
+              <input
+                type="checkbox"
+                checked={localAiEnhancement}
+                onChange={(event) => setLocalAiEnhancement(event.target.checked)}
+              />{" "}
+              Local AI Enhancement (prefer on-device tier when available)
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={showIntelligenceMap}
+                onChange={(event) => setShowIntelligenceMap(event.target.checked)}
+              />{" "}
+              Show Intelligence Engine Map
+            </label>
+          </div>
+          <p className="muted mini">
+            Active provider: {snapshot?.analysis_provenance?.active_provider ?? "deterministic"} | Tier: {snapshot?.analysis_provenance?.active_tier ?? "tier3-deterministic"}
+          </p>
+          <p className="muted mini">
+            Alternative narrative analysis: <Link href="/alternative">open separate page</Link>
+          </p>
+        </details>
+      </section>
+
       <section className="panel">
         <h2>{lensType === "country" ? "Country Focus Impact Map" : "Country Impact Map"}</h2>
         <div className="map-live-grid full-width">
@@ -735,7 +949,7 @@ export default function HomePage() {
                   <li key={`${signal.link}-${signal.title}`}>
                     <a href={signal.link} target="_blank" rel="noreferrer">{signal.title}</a>
                     <p className="muted">
-                      {signal.source} | {signal.issue} | {signal.published_utc ? new Date(signal.published_utc).toLocaleTimeString() : "time unknown"}
+                      {signal.source} | {signal.issue} | {signal.published_utc ? new Date(signal.published_utc).toLocaleTimeString() : "time unknown"} | engine: {signal.intelligence_metadata?.provider ?? "deterministic"}
                     </p>
                   </li>
                 ))}
@@ -793,6 +1007,61 @@ export default function HomePage() {
         <p className="muted mini">{snapshot?.scenario_methods.consensus.derived_from ?? "Resolver metadata loading..."}</p>
         <p className="muted mini">{snapshot?.scenario_methods.consensus.analyst_panel_consensus ?? ""}</p>
       </section>
+
+      <section className="grid-2">
+        <article className="panel">
+          <h2>Major Conflicts Identified</h2>
+          <div className="impact-grid">
+            {(snapshot?.major_conflicts ?? []).slice(0, 6).map((item) => (
+              <div key={item.issue_slug} className="impact-card">
+                <p>{item.conflict_name}</p>
+                <div className="mini-battery">
+                  <div
+                    className="mini-battery-fill"
+                    style={{ width: `${item.percent}%`, background: severityColor(item.severity) }}
+                  />
+                </div>
+                <strong>{item.band} | {item.percent}%</strong>
+                <p className="muted mini">
+                  Regions: {item.primary_regions.join(", ")}
+                </p>
+                <p className="muted mini">
+                  Actors: {item.principal_actors.join(", ")}
+                </p>
+              </div>
+            ))}
+          </div>
+        </article>
+        <article className="panel">
+          <h2>PESTEL Forces</h2>
+          <ul className="metric-list">
+            {(snapshot?.pestel_framework ?? []).map((row) => (
+              <li key={row.dimension}>
+                <span>{row.dimension}</span>
+                <strong>{row.band} ({row.percent}%)</strong>
+              </li>
+            ))}
+          </ul>
+          <p className="muted mini">
+            PESTEL is computed from force posture and then reweighted by current lens scope.
+          </p>
+        </article>
+      </section>
+
+      {showIntelligenceMap && (
+        <section className="panel compact">
+          <h2>Intelligence Engine Map</h2>
+          <ul className="metric-list">
+            {(snapshot?.analysis_provenance?.areas ?? []).map((row) => (
+              <li key={row.area}>
+                <span>{row.area}</span>
+                <strong>{row.engine}</strong>
+              </li>
+            ))}
+          </ul>
+          <p className="muted mini">{snapshot?.analysis_provenance?.notes ?? ""}</p>
+        </section>
+      )}
 
       <section className="grid-3">
         <article className="panel">
@@ -1008,6 +1277,9 @@ export default function HomePage() {
             ))}
           </div>
           <p className="muted mini">{snapshot?.expert_review.consensus ?? ""}</p>
+          <p className="muted mini">
+            Generation mode: {snapshot?.analysis_provenance?.llm_enabled ? "LLM-assisted analyst synthesis" : "Deterministic template synthesis"}
+          </p>
         </article>
 
         <article className="panel">

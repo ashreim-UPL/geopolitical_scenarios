@@ -20,21 +20,31 @@ type ImpactMapProps = {
 
 const REGION_VIEW: Record<string, { center: [number, number]; zoom: number }> = {
   Gulf: { center: [25.5, 51.0], zoom: 4 },
+  "Gulf region": { center: [25.5, 51.0], zoom: 4 },
   Levant: { center: [33.5, 36.0], zoom: 5 },
   MENA: { center: [28.5, 38.0], zoom: 4 },
   Europe: { center: [52.0, 12.0], zoom: 4 },
   "East Asia": { center: [30.0, 122.0], zoom: 4 },
+  "Eastern Europe": { center: [49.5, 29.0], zoom: 4 },
+  "EU energy consumers": { center: [50.5, 10.5], zoom: 4 },
   "Global shipping lanes": { center: [19.0, 40.0], zoom: 3 },
 };
 
-function severityColor(value: number): string {
-  if (value >= 0.78) {
+function severityColor(value: number, directness: string): string {
+  // Color policy:
+  // - Direct exposure escalates faster to amber/red.
+  // - Indirect exposure stays blue unless very high severity.
+  const isDirect = directness === "direct";
+  if (value >= 0.8) {
     return "#e24b4a";
   }
-  if (value >= 0.52) {
+  if (isDirect && value >= 0.4) {
     return "#ef9f27";
   }
-  if (value >= 0.3) {
+  if (!isDirect && value >= 0.6) {
+    return "#ef9f27";
+  }
+  if (value >= 0.2) {
     return "#378add";
   }
   return "#1d9e75";
@@ -143,7 +153,7 @@ export default function ImpactMap({ points, lensType, lensFocus }: ImpactMapProp
     markersLayer.clearLayers();
 
     points.forEach((point) => {
-      const color = severityColor(point.severity);
+      const color = severityColor(point.severity, point.directness);
       const ringRadiusMeters = Math.round(
         (point.directness === "direct" ? 170000 : 240000) + (point.severity * 620000)
       );
@@ -166,11 +176,11 @@ export default function ImpactMap({ points, lensType, lensFocus }: ImpactMapProp
       }).addTo(markersLayer);
 
       const status =
-        point.severity >= 0.78
+        point.severity >= 0.8
           ? "DIRECT CONFLICT"
-          : point.severity >= 0.52
+          : point.directness === "direct" && point.severity >= 0.4
             ? "ELEVATED TENSION"
-            : point.severity >= 0.3
+            : point.severity >= 0.2
               ? "SYSTEMIC RISK"
               : "MONITORING";
       marker.bindPopup(
@@ -186,7 +196,9 @@ export default function ImpactMap({ points, lensType, lensFocus }: ImpactMapProp
     const defaultCenter: [number, number] = [20, 10];
     const defaultZoom = lensType === "global" ? 2 : 3;
     const bounds = boundsFromPoints(points);
-    if (bounds) {
+    if (lensType === "region" && regionPreset) {
+      map.setView(regionPreset.center, regionPreset.zoom);
+    } else if (bounds) {
       map.fitBounds(bounds, { padding: [16, 16], maxZoom: lensType === "country" ? 6 : 5 });
     } else {
       map.setView(regionPreset?.center ?? defaultCenter, regionPreset?.zoom ?? defaultZoom);

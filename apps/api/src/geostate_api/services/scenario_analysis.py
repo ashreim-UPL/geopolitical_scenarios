@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,89 @@ ISSUE_QUERIES: dict[str, str] = {
     "russia-ukraine-war": "Russia Ukraine missile strike sanctions frontline",
     "iran-israel-dynamics": "Iran Israel strike proxy escalation diplomatic signaling",
 }
+
+MAJOR_CONFLICT_CATALOG: dict[str, dict[str, Any]] = {
+    "red-sea-shipping": {
+        "name": "Red Sea Maritime Security Crisis",
+        "primary_regions": ["Red Sea", "Bab el-Mandeb", "Suez corridor"],
+        "principal_actors": ["Yemen Houthis", "US-led naval forces", "Regional shipping insurers"],
+    },
+    "gulf-energy-security": {
+        "name": "Gulf Energy Security Tension",
+        "primary_regions": ["Gulf", "Hormuz", "Global LNG routes"],
+        "principal_actors": ["Iran", "GCC states", "Global importers"],
+    },
+    "us-china-technology": {
+        "name": "US-China Strategic Technology Contest",
+        "primary_regions": ["US", "China", "Global semiconductor chain"],
+        "principal_actors": ["United States", "China", "Allied export-control states"],
+    },
+    "taiwan-strait": {
+        "name": "Taiwan Strait Military-Strategic Pressure",
+        "primary_regions": ["Taiwan Strait", "East Asia"],
+        "principal_actors": ["China", "Taiwan", "US and allies"],
+    },
+    "russia-ukraine-war": {
+        "name": "Russia-Ukraine High-Intensity Conflict",
+        "primary_regions": ["Eastern Europe", "Black Sea"],
+        "principal_actors": ["Russia", "Ukraine", "NATO states"],
+    },
+    "iran-israel-dynamics": {
+        "name": "Iran-Israel Escalation Track",
+        "primary_regions": ["Levant", "Gulf", "Regional proxy theaters"],
+        "principal_actors": ["Iran", "Israel", "Regional proxies", "US"],
+    },
+}
+
+ALTERNATIVE_SOURCE_FEEDS: list[dict[str, str]] = [
+    {
+        "name": "Substack Geopolitical Longform",
+        "type": "esoteric",
+        "description": "Narrative-heavy independent geopolitics commentary; high hypothesis density.",
+    },
+    {
+        "name": "Telegram Open-Source Rumor Channels",
+        "type": "conspiracy-adjacent",
+        "description": "Fast rumor propagation; low verification quality, useful for early signal watch only.",
+    },
+    {
+        "name": "YouTube Strategic Speculation Streams",
+        "type": "conspiracy-adjacent",
+        "description": "Speculative claims and scenario storytelling; requires strict evidence separation.",
+    },
+    {
+        "name": "Fringe Forums / Imageboards",
+        "type": "conspiracy",
+        "description": "High noise and disinformation risk; only for alternate narrative monitoring.",
+    },
+]
+
+ALTERNATIVE_THEME_CATALOG: list[dict[str, Any]] = [
+    {
+        "name": "Prophetic-cycle narratives (Nostradamus-style)",
+        "type": "esoteric",
+        "description": "Apocalyptic pattern-reading narratives projecting civilizational collision windows.",
+        "force_bias": {"narrative": 0.08, "ideological": 0.08},
+    },
+    {
+        "name": "Religious end-times war framing",
+        "type": "ideological",
+        "description": "Eschatological interpretations of conflict used in mobilization and perception warfare.",
+        "force_bias": {"ideological": 0.12, "military": 0.03},
+    },
+    {
+        "name": "Hidden-hand / covert-orchestrator theories",
+        "type": "conspiracy",
+        "description": "Claims of unseen elite coordination shaping escalation and market shock events.",
+        "force_bias": {"narrative": 0.1, "economic": 0.04},
+    },
+]
+
+_SCENARIO_IMAGE_CACHE: dict[str, tuple[datetime, dict[str, Any]]] = {}
+_SCENARIO_IMAGE_CACHE_TTL = timedelta(minutes=25)
+_SNAPSHOT_CACHE: dict[str, dict[str, Any]] = {}
+_SNAPSHOT_HISTORY: dict[str, list[dict[str, Any]]] = {}
+_SNAPSHOT_REFRESH_TASKS: dict[str, asyncio.Task[Any]] = {}
 
 
 SCENARIOS: tuple[str, ...] = (
@@ -516,6 +600,147 @@ def _band_rank(label: str) -> int:
     return order.get(label, 0)
 
 
+def resolve_intelligence_provider(*, prefer_local_ai: bool = False) -> dict[str, Any]:
+    if prefer_local_ai and os.getenv("WINDOW_AI_AVAILABLE", "").lower() in {"1", "true", "yes"}:
+        return {
+            "tier": "tier1-edge",
+            "provider": "nano",
+            "model_version": "gemini-nano",
+            "llm_enabled": True,
+        }
+    if os.getenv("GEMINI_API_KEY"):
+        return {
+            "tier": "tier2-deep",
+            "provider": "gemini-cloud",
+            "model_version": "gemini-1.5-pro",
+            "llm_enabled": True,
+        }
+    if os.getenv("OPENAI_API_KEY"):
+        return {
+            "tier": "tier2-deep",
+            "provider": "openai",
+            "model_version": "gpt-family",
+            "llm_enabled": True,
+        }
+    return {
+        "tier": "tier3-deterministic",
+        "provider": "deterministic",
+        "model_version": "heuristic-v1",
+        "llm_enabled": False,
+    }
+
+
+def _build_intelligence_metadata(
+    provider_info: dict[str, Any],
+    *,
+    confidence_score: float,
+    reasoning_tokens: str,
+) -> dict[str, Any]:
+    return {
+        "provider": provider_info["provider"],
+        "reasoning_tokens": reasoning_tokens,
+        "confidence_score": round(max(0.0, min(1.0, confidence_score)), 3),
+        "model_version": provider_info["model_version"],
+    }
+
+
+def _identify_major_conflicts(
+    selected_issues: list[str],
+    scenarios: list[dict[str, Any]],
+    force_scores: dict[str, float],
+) -> list[dict[str, Any]]:
+    selected = selected_issues or list(ISSUE_CATALOG.keys())[:3]
+    scenario_lookup = {row["name"]: row["probability"] for row in scenarios}
+    base_pressure = (
+        (scenario_lookup.get("Regional war escalation", 0.0) * 0.42)
+        + (scenario_lookup.get("Maritime or infrastructure shock", 0.0) * 0.22)
+        + (force_scores.get("military", 0.0) * 0.2)
+        + (force_scores.get("economic", 0.0) * 0.16)
+    )
+
+    rows: list[dict[str, Any]] = []
+    for slug in selected:
+        catalog = MAJOR_CONFLICT_CATALOG.get(slug)
+        if not catalog:
+            continue
+        issue_pressure = ISSUE_ESCALATION_PRESSURE.get(slug, 0.55)
+        score = min((base_pressure * 0.62) + (issue_pressure * 0.38), 1.0)
+        band = _risk_band(score)
+        rows.append(
+            {
+                "issue_slug": slug,
+                "issue_label": ISSUE_CATALOG.get(slug, slug),
+                "conflict_name": catalog["name"],
+                "primary_regions": catalog["primary_regions"],
+                "principal_actors": catalog["principal_actors"],
+                "severity": round(score, 3),
+                "band": band["label"],
+                "percent": band["percent"],
+                "rationale": "Ranked by selected issue pressure + scenario escalation contribution + force posture.",
+            }
+        )
+    return sorted(rows, key=lambda row: row["severity"], reverse=True)
+
+
+def _build_pestel_framework(force_scores: dict[str, float], lens: str, focus: str | None) -> list[dict[str, Any]]:
+    military = force_scores.get("military", 0.0)
+    cyber = force_scores.get("cyber", 0.0)
+    economic = force_scores.get("economic", 0.0)
+    diplomatic = force_scores.get("diplomatic", 0.0)
+    narrative = force_scores.get("narrative", 0.0)
+    ideological = force_scores.get("ideological", 0.0)
+
+    pestel_raw = {
+        "Political": (diplomatic * 0.5) + (military * 0.2) + 0.12,
+        "Economic": (economic * 0.72) + 0.1,
+        "Social": (narrative * 0.5) + (ideological * 0.35) + 0.1,
+        "Technological": (cyber * 0.62) + 0.08,
+        "Environmental": (economic * 0.2) + (military * 0.2) + 0.06,
+        "Legal": (diplomatic * 0.35) + (economic * 0.25) + 0.07,
+    }
+
+    focus_lower = (focus or "").strip().lower()
+    if lens == "country":
+        if focus_lower in {"uae", "saudi arabia", "qatar", "oman", "kuwait", "bahrain"}:
+            pestel_raw["Economic"] *= 1.16
+            pestel_raw["Social"] *= 1.1
+        if focus_lower in {"ukraine", "russia", "iran", "israel", "syria", "iraq", "taiwan"}:
+            pestel_raw["Political"] *= 1.18
+            pestel_raw["Technological"] *= 1.12
+    elif lens == "region" and focus_lower in {"gulf", "mena", "levant"}:
+        pestel_raw["Political"] *= 1.12
+        pestel_raw["Economic"] *= 1.1
+
+    rows: list[dict[str, Any]] = []
+    for label, score in pestel_raw.items():
+        bounded = min(max(score, 0.0), 1.0)
+        band = _risk_band(bounded)
+        rows.append(
+            {
+                "dimension": label,
+                "severity": round(bounded, 3),
+                "band": band["label"],
+                "percent": band["percent"],
+            }
+        )
+    return sorted(rows, key=lambda row: row["severity"], reverse=True)
+
+
+def _build_lens_alignment(lens: str, focus: str | None) -> dict[str, Any]:
+    active = f"{lens} ({focus})" if focus else lens
+    is_scoped = lens in {"region", "country"}
+    return {
+        "active_lens": active,
+        "sections": {
+            "three_sector_model": is_scoped or lens == "global",
+            "maslow_hierarchy": is_scoped or lens == "global",
+            "sector_impact": is_scoped or lens == "global",
+            "indicator_impact": is_scoped or lens == "global",
+        },
+        "notes": "All impact sections are lens-aware; country/region selections apply explicit reweight multipliers.",
+    }
+
+
 def _calculate_overall_criticality(
     scenarios: list[dict[str, Any]],
     force_scores: dict[str, float],
@@ -633,12 +858,15 @@ def _lens_multiplier(group: str, label: str, *, lens: str, focus: str | None) ->
             return 0.98
 
     if lens == "country":
+        conflict_core = {"ukraine", "russia", "iran", "israel", "syria", "iraq", "taiwan"}
+        gulf_services = {"uae", "saudi arabia", "qatar", "bahrain", "oman", "kuwait"}
+        food_energy_importers = {"india", "bangladesh", "pakistan", "egypt"}
         if group == "countries":
             if focus_lower and focus_lower == label_lower:
                 return 1.35
             return 0.88
         if group == "sectors":
-            if focus_lower in {"uae", "saudi arabia", "qatar", "bahrain", "oman", "kuwait"} and label in {
+            if focus_lower in gulf_services and label in {
                 "Hospitality",
                 "Tourism",
                 "F&B, Restaurants, Nightlife",
@@ -646,46 +874,62 @@ def _lens_multiplier(group: str, label: str, *, lens: str, focus: str | None) ->
                 "Real Estate",
             }:
                 return 1.24
-            if focus_lower in {"india", "bangladesh", "pakistan", "egypt"} and label in {
+            if focus_lower in food_energy_importers and label in {
                 "Energy",
                 "Shipping & Logistics",
                 "Food & Agriculture",
             }:
                 return 1.22
-            if focus_lower in {"ukraine", "russia", "iran", "israel", "syria", "iraq", "taiwan"} and label in {
+            if focus_lower in conflict_core and label in {
                 "Energy",
                 "Shipping & Logistics",
                 "Technology",
             }:
-                return 1.2
-            return 0.94
-        if group == "indicators":
-            if focus_lower in {"ukraine", "russia", "iran", "israel", "syria", "iraq", "taiwan"} and label in {"Safety", "Security"}:
-                return 1.27
-            if focus_lower in {"uae", "saudi arabia", "qatar", "bahrain", "oman", "kuwait"} and label in {"Economy", "Prices"}:
-                return 1.18
-            if focus_lower in {"india", "bangladesh", "pakistan", "egypt"} and label in {"Prices", "Economy"}:
+                return 1.32
+            if focus_lower in conflict_core and label in {
+                "Food & Agriculture",
+                "Tourism",
+                "Hospitality",
+                "F&B, Restaurants, Nightlife",
+                "Real Estate",
+                "Luxury Shopping",
+            }:
                 return 1.16
-            return 0.95
+            if focus_lower in conflict_core:
+                return 1.1
+            return 0.98
+        if group == "indicators":
+            if focus_lower in conflict_core and label in {"Safety", "Security"}:
+                return 1.45
+            if focus_lower in conflict_core and label in {"Prices", "Economy"}:
+                return 1.2
+            if focus_lower in gulf_services and label in {"Economy", "Prices"}:
+                return 1.18
+            if focus_lower in food_energy_importers and label in {"Prices", "Economy"}:
+                return 1.16
+            if focus_lower in conflict_core:
+                return 1.08
+            return 0.98
         if group == "three_sector_model":
-            if focus_lower in {"uae", "saudi arabia", "qatar", "bahrain", "oman", "kuwait"}:
+            if focus_lower in gulf_services:
                 if label == "Tertiary Sector":
                     return 1.26
                 if label == "Primary Sector":
                     return 1.08
                 return 1.02
-            if focus_lower in {"ukraine", "russia", "iran", "israel", "syria", "iraq", "taiwan"}:
+            if focus_lower in conflict_core:
                 if label in {"Primary Sector", "Secondary Sector"}:
-                    return 1.2
-                return 0.95
+                    return 1.28
+                return 1.06
             return 1.0
         if group == "maslow_levels":
-            if focus_lower in {"ukraine", "russia", "iran", "israel", "syria", "iraq", "taiwan"}:
+            if focus_lower in conflict_core:
                 if label.startswith("Safety"):
-                    return 1.3
+                    return 1.42
                 if label.startswith("Physiological"):
-                    return 1.12
-            if focus_lower in {"uae", "saudi arabia", "qatar", "bahrain", "oman", "kuwait"}:
+                    return 1.2
+                return 1.08
+            if focus_lower in gulf_services:
                 if label.startswith("Future Capacity"):
                     return 1.14
                 if label.startswith("Safety"):
@@ -704,6 +948,19 @@ def _reweight_impact_group(items: list[dict[str, Any]], *, group: str, lens: str
         band = _risk_band(severity)
         weighted.append({**item, "severity": round(severity, 3), "band": band["label"], "percent": band["percent"]})
     return sorted(weighted, key=lambda row: row["severity"], reverse=True)
+
+
+def _apply_min_floor(items: list[dict[str, Any]], floors: dict[str, float]) -> list[dict[str, Any]]:
+    adjusted: list[dict[str, Any]] = []
+    for row in items:
+        target = floors.get(row["label"])
+        if target is None:
+            adjusted.append(row)
+            continue
+        severity = max(row["severity"], target)
+        band = _risk_band(severity)
+        adjusted.append({**row, "severity": round(severity, 3), "band": band["label"], "percent": band["percent"]})
+    return sorted(adjusted, key=lambda entry: entry["severity"], reverse=True)
 
 
 def _build_three_sector_model(
@@ -1094,14 +1351,45 @@ def _build_impacts(
             if rows:
                 countries_by_region_weighted.append({"region": group["region"], "countries": rows})
 
+    sectors_weighted = _reweight_impact_group(sector_cards, group="sectors", lens=lens, focus=focus)
+    indicators_weighted = _reweight_impact_group(indicators, group="indicators", lens=lens, focus=focus)
+
+    if lens == "country" and focus:
+        focus_name = focus.strip().lower()
+        focus_row = next((row for row in countries_weighted if row["label"].strip().lower() == focus_name), None)
+        if focus_row and focus_row.get("directness") == "direct" and float(focus_row.get("severity", 0.0)) >= 0.34:
+            sectors_weighted = _apply_min_floor(
+                sectors_weighted,
+                {
+                    "Energy": 0.42,
+                    "Shipping & Logistics": 0.39,
+                    "Technology": 0.34,
+                    "Food & Agriculture": 0.31,
+                    "Hospitality": 0.33,
+                    "Tourism": 0.3,
+                    "F&B, Restaurants, Nightlife": 0.31,
+                    "Luxury Shopping": 0.29,
+                    "Real Estate": 0.32,
+                },
+            )
+            indicators_weighted = _apply_min_floor(
+                indicators_weighted,
+                {
+                    "Safety": 0.52,
+                    "Security": 0.48,
+                    "Economy": 0.41,
+                    "Prices": 0.43,
+                },
+            )
+
     return {
         "prediction": prediction,
         "regions_world": regions_weighted,
         "countries": countries_weighted,
         "countries_by_region": countries_by_region_weighted,
         "country_focus_options": sorted(country_focus_catalog),
-        "sectors": _reweight_impact_group(sector_cards, group="sectors", lens=lens, focus=focus),
-        "indicators": _reweight_impact_group(indicators, group="indicators", lens=lens, focus=focus),
+        "sectors": sectors_weighted,
+        "indicators": indicators_weighted,
         "three_sector_model": three_sector,
         "maslow_hierarchy": maslow,
     }
@@ -1128,14 +1416,24 @@ def _trend_label(items: list[SignalItem]) -> str:
     return "stable"
 
 
-def _normalize_items(raw_items: list[SignalItem], limit: int) -> list[dict[str, Any]]:
+def _normalize_items(raw_items: list[SignalItem], limit: int, *, provider_info: dict[str, Any], use_live: bool) -> list[dict[str, Any]]:
     sorted_items = sorted(
         raw_items,
         key=lambda item: item.published_utc or datetime(1970, 1, 1, tzinfo=UTC),
         reverse=True,
     )
+    now = datetime.now(UTC)
+    dedupe: set[str] = set()
     rows: list[dict[str, Any]] = []
     for item in sorted_items[:limit]:
+        title_key = "".join(ch for ch in item.title.lower() if ch.isalnum() or ch.isspace()).strip()
+        if not title_key or title_key in dedupe:
+            continue
+        if use_live and item.published_utc is not None:
+            age_hours = (now - item.published_utc).total_seconds() / 3600
+            if age_hours > 72:
+                continue
+        dedupe.add(title_key)
         rows.append(
             {
                 "title": item.title,
@@ -1143,8 +1441,15 @@ def _normalize_items(raw_items: list[SignalItem], limit: int) -> list[dict[str, 
                 "link": item.link,
                 "issue": item.issue,
                 "published_utc": None if item.published_utc is None else item.published_utc.isoformat(),
+                "intelligence_metadata": _build_intelligence_metadata(
+                    provider_info,
+                    confidence_score=0.62,
+                    reasoning_tokens="Signal classified through deterministic keyword/force scoring.",
+                ),
             }
         )
+        if len(rows) >= limit:
+            break
     return rows
 
 
@@ -1186,6 +1491,386 @@ def _fallback_demo_signals(selected_issues: list[str]) -> list[SignalItem]:
                 )
             )
     return demo
+
+
+def _build_alternative_signals(
+    selected_issues: list[str],
+    *,
+    provider_info: dict[str, Any],
+    generated_at: datetime,
+) -> list[dict[str, Any]]:
+    issue_list = selected_issues or list(ISSUE_CATALOG.keys())[:3]
+    rows: list[dict[str, Any]] = []
+    templates = (
+        "{issue}: unverified claim of covert signaling pressure in active corridor.",
+        "{issue}: rumor chain suggests informal de-escalation backchannel activity.",
+        "{issue}: speculative chatter indicates infrastructure pressure escalation.",
+        "{issue}: gossip network points to alliance posture recalibration.",
+    )
+    for idx, issue in enumerate(issue_list):
+        label = ISSUE_CATALOG.get(issue, issue)
+        for source_idx, source in enumerate(ALTERNATIVE_SOURCE_FEEDS[:3]):
+            title = templates[(idx + source_idx) % len(templates)].format(issue=label)
+            published = generated_at - timedelta(minutes=(idx * 11) + (source_idx * 4))
+            rows.append(
+                {
+                    "title": title,
+                    "source": source["name"],
+                    "link": f"https://example.com/alternative/{issue}/{source_idx}",
+                    "issue": issue,
+                    "published_utc": published.isoformat(),
+                    "intelligence_metadata": _build_intelligence_metadata(
+                        provider_info,
+                        confidence_score=0.41,
+                        reasoning_tokens="Alternative narrative clustering from low-verification sources.",
+                    ),
+                }
+            )
+    return rows[:20]
+
+
+def _normalize_force_distribution(force_scores: dict[str, float]) -> dict[str, float]:
+    total = sum(max(0.0, value) for value in force_scores.values()) or 1.0
+    normalized = {key: round(max(0.0, value) / total, 4) for key, value in force_scores.items()}
+    drift = round(1.0 - sum(normalized.values()), 4)
+    if drift != 0:
+        top_force = max(normalized, key=normalized.get)
+        normalized[top_force] = round(normalized[top_force] + drift, 4)
+    return normalized
+
+
+def _alternative_rows_to_signal_items(rows: list[dict[str, Any]]) -> list[SignalItem]:
+    items: list[SignalItem] = []
+    for row in rows:
+        items.append(
+            SignalItem(
+                title=row.get("title", ""),
+                link=row.get("link", ""),
+                source=row.get("source", "alternative-source"),
+                published_utc=_safe_parse_datetime(row.get("published_utc", "")),
+                issue=row.get("issue", "alternative"),
+                summary="Alternative narrative channel signal.",
+            )
+        )
+    return items
+
+
+def _build_alternative_theme_matrix(
+    selected_issues: list[str],
+    issue_pressure: float,
+) -> list[dict[str, Any]]:
+    issue_count = max(1, len(selected_issues))
+    rows: list[dict[str, Any]] = []
+    for idx, theme in enumerate(ALTERNATIVE_THEME_CATALOG):
+        base = 0.24 + (issue_pressure * 0.28) + (issue_count * 0.018) + (idx * 0.035)
+        score = min(base, 0.86)
+        band = _risk_band(score)
+        rows.append(
+            {
+                "name": theme["name"],
+                "type": theme["type"],
+                "description": theme["description"],
+                "score": round(score, 3),
+                "percent": band["percent"],
+                "band": band["label"],
+                "force_bias": theme["force_bias"],
+            }
+        )
+    return sorted(rows, key=lambda row: row["score"], reverse=True)
+
+
+def _recommended_refresh_policy(*, use_live: bool, signals: list[SignalItem]) -> dict[str, Any]:
+    now = datetime.now(UTC)
+    if not use_live:
+        interval = 10800  # 3h
+        rationale = "Demo/static mode: lower update cadence is sufficient."
+    else:
+        published = [item.published_utc for item in signals if item.published_utc is not None]
+        if not published:
+            interval = 7200  # 2h
+            rationale = "No recent live timestamps; fallback to slower refresh."
+        else:
+            newest = max(published)
+            age_minutes = max(0.0, (now - newest).total_seconds() / 60.0)
+            if age_minutes <= 90:
+                interval = 900  # 15m
+                rationale = "High-churn live feed detected; using 10-15 minute cadence."
+            elif age_minutes <= 360:
+                interval = 1800  # 30m
+                rationale = "Moderate live update rate; using 30 minute cadence."
+            else:
+                interval = 7200  # 2h
+                rationale = "Lower live churn; using 2-3 hour cadence."
+    return {
+        "recommended_interval_seconds": interval,
+        "rationale": rationale,
+        "next_refresh_utc": (now + timedelta(seconds=interval)).isoformat(),
+    }
+
+
+def _snapshot_cache_key(
+    *,
+    selected_issues: list[str],
+    use_live: bool,
+    lens: str,
+    focus: str | None,
+    local_ai_enabled: bool,
+    alternative_mode: bool,
+) -> str:
+    issues = ",".join(sorted(selected_issues))
+    return f"{'alt' if alternative_mode else 'main'}|{issues}|{use_live}|{lens}|{focus or ''}|{local_ai_enabled}"
+
+
+def _snapshot_cache_ttl_seconds(*, use_live: bool) -> int:
+    return 900 if use_live else 7200
+
+
+def _push_snapshot_history(cache_key: str, snapshot: dict[str, Any]) -> None:
+    history = _SNAPSHOT_HISTORY.setdefault(cache_key, [])
+    row = {
+        "generated_utc": snapshot.get("generated_utc"),
+        "mode": snapshot.get("mode"),
+        "overall_criticality": (snapshot.get("overall_criticality") or {}).get("percent"),
+        "conflict_escalation": (snapshot.get("conflict_escalation") or {}).get("percent"),
+        "top_scenario": ((snapshot.get("scenarios") or [{}])[0]).get("name"),
+    }
+    history.insert(0, row)
+    del history[2:]
+
+
+def _safe_json_load(raw: str) -> dict[str, Any] | None:
+    try:
+        import json
+
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        return None
+
+
+async def _generate_creative_prediction_payload(
+    *,
+    selected_issues: list[str],
+    scenario: str,
+    probability: float,
+    prediction_text: str,
+    alternative_mode: bool,
+) -> dict[str, Any]:
+    openai_key = os.getenv("OPENAI_API_KEY")
+    context = (
+        f"Selected issues: {', '.join(selected_issues) if selected_issues else 'default issue basket'}. "
+        f"Lead scenario: {scenario}. Probability: {int(round(probability * 100))}%. "
+        f"Context: {prediction_text[:800]}"
+    )
+    if not openai_key:
+        fallback_story = (
+            f"{scenario} remains the leading near-term path across the selected issues, with signals pointing to a tense but adaptive operating environment where security signaling, market risk premiums, and diplomatic maneuvering coexist. In practical terms, the next 24-72 hours are likely to be driven by visible posturing and narrative escalation, while the 3-14 day window will determine whether disruptions harden into sustained spillovers across transport, prices, and investor confidence; the most reliable posture is to track measurable signposts and treat high-noise claims as provisional until corroborated."
+        )
+        fallback_visual = (
+            "Wide cinematic 16:9 geopolitical command-center and port-corridor scene at dusk, realistic documentary style, neutral palette, clean lighting, visible infrastructure and shipping lanes, no text overlays, no logos, no faces, no gore."
+        )
+        return {
+            "story_text": fallback_story,
+            "visual_prompt": fallback_visual,
+            "scenarios_payload": {
+                "scenarios": [
+                    {
+                        "name": scenario,
+                        "narrative": fallback_story,
+                        "signposts": [
+                            "Shipping insurance premiums increase >10%",
+                            "Daily hostile incident count rises for 3 consecutive days",
+                            "Emergency diplomatic hotline traffic spikes >20%",
+                        ],
+                        "implications": [
+                            "Risk transfer costs rise across energy and logistics sectors",
+                            "Higher policy uncertainty discounts regional assets",
+                            "Supply chain rerouting extends lead times",
+                        ],
+                        "no_regret_moves": [
+                            "Maintain diversified logistics routing",
+                            "Hedge fuel and shipping cost exposure",
+                            "Pre-position continuity protocols for critical operations",
+                        ],
+                        "contingent_moves": [
+                            "Escalate contingency staffing when incident frequency breaches threshold",
+                            "Trigger alternative payment channels if sanctions intensify",
+                            "Switch to protected freight corridors if maritime risk index spikes",
+                        ],
+                    }
+                ]
+            },
+            "provider": "deterministic",
+            "model": "fallback-template-v1",
+            "generated": False,
+        }
+
+    mode_hint = (
+        "Mode: Alternative narrative track (blend verified signals with rumor/esoteric overlays)."
+        if alternative_mode
+        else "Mode: Main intelligence track (prioritize verified and high-reliability signals)."
+    )
+    scenarios_prompt = (
+        "Generate a vivid, and highly differentiated scenarios based on the selected issue and the colelcted data and analysis "
+        "These scenarios should be creative, employing elements of storytelling to bring the future to life.\n\n"
+        "Return ONLY a JSON object that strictly matches the Scenarios Payload schema.\n\n"
+        "Creative Requirements:\n"
+        "- **Names**: Use descreptive names that attracts audience.\n"
+        "- **Narrative**: Write 2–4 vivid paragraphs (120–220 words) for each scenario. Describe the \"feel\" of the world, not just the economics. No placeholders.\n"
+        "- **Logic**: Ensure logical consistency with the data\n\n"
+        "Structural Rules:\n"
+        "- `signposts` must be concrete, measurable indicators (minimum 3 per scenario).\n"
+        "- Include actionable `implications`, `no_regret_moves`, and `contingent_moves` (minimum 3 each per scenario)."
+        "\n\nUse only the provided scenario context. Do not invent factual events that are not supported by the context.\n"
+        f"{mode_hint}"
+    )
+    story_prompt = (
+        "You are a master storyteller and futurist. Craft an immersive, \"Show, Don't Tell\" narrative that brings this scenario to life.\n\n"
+        "Return ONLY a JSON object that matches the Scenario Story schema.\n\n"
+        "Guidance:\n"
+        "- **story_text**: Write exactly one captivating paragraph (90-150 words), easy to read, grounded strictly in provided context.\n"
+        "- **visual_prompt**: A highly detailed cinematic description suitable for image generation, 16:9 wide composition, consulting-photography realism, clean lighting, neutral palette, no text overlays, no logos, no faces, no gore.\n"
+        "- **Consistency**: Ensure narrative is strictly grounded in the provided economic/political logic and include uncertainty cues where evidence is limited.\n"
+        f"{mode_hint}"
+    )
+
+    model = os.getenv("OPENAI_TEXT_MODEL", "gpt-4o-mini")
+    try:
+        async with httpx.AsyncClient(timeout=80) as client:
+            scenarios_resp = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {openai_key}", "Content-Type": "application/json"},
+                json={
+                    "model": model,
+                    "temperature": 0.8,
+                    "response_format": {"type": "json_object"},
+                    "messages": [
+                        {"role": "system", "content": "You are a geopolitical scenario architect. Output strict JSON only."},
+                        {"role": "user", "content": f"{scenarios_prompt}\n\nScenario context:\n{context}"},
+                    ],
+                },
+            )
+            scenarios_resp.raise_for_status()
+            scenarios_content = (((scenarios_resp.json().get("choices") or [{}])[0]).get("message") or {}).get("content", "{}")
+            scenarios_payload = _safe_json_load(scenarios_content) or {"scenarios": []}
+
+            story_resp = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {openai_key}", "Content-Type": "application/json"},
+                json={
+                    "model": model,
+                    "temperature": 0.9,
+                    "response_format": {"type": "json_object"},
+                    "messages": [
+                        {"role": "system", "content": "You are a master storyteller and futurist. Output strict JSON only."},
+                        {"role": "user", "content": f"{story_prompt}\n\nScenario context:\n{context}\nAlternative mode: {alternative_mode}"},
+                    ],
+                },
+            )
+            story_resp.raise_for_status()
+            story_content = (((story_resp.json().get("choices") or [{}])[0]).get("message") or {}).get("content", "{}")
+            story_payload = _safe_json_load(story_content) or {}
+            return {
+                "story_text": str(story_payload.get("story_text", "")),
+                "visual_prompt": str(story_payload.get("visual_prompt", "")),
+                "scenarios_payload": scenarios_payload,
+                "provider": "openai",
+                "model": model,
+                "generated": True,
+            }
+    except httpx.HTTPError:
+        return {
+            "story_text": "",
+            "visual_prompt": "",
+            "scenarios_payload": {"scenarios": []},
+            "provider": "openai",
+            "model": model,
+            "generated": False,
+        }
+
+
+async def _generate_ai_scenario_image(
+    *,
+    scenario: str,
+    probability: float,
+    prediction_text: str,
+    alternative_mode: bool,
+    visual_prompt_override: str | None = None,
+) -> dict[str, Any]:
+    cache_key = f"{alternative_mode}:{scenario}:{round(probability, 3)}"
+    now = datetime.now(UTC)
+    cached = _SCENARIO_IMAGE_CACHE.get(cache_key)
+    if cached and (now - cached[0]) <= _SCENARIO_IMAGE_CACHE_TTL:
+        return cached[1]
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return {"image_data_url": None, "provider": "none", "model": "none", "generated": False}
+
+    safe_prompt_prefix = (
+        "Wide 16:9 cinematic alternative-risk depiction blending rumor, ideological narratives, and geopolitical stress markers; realistic consulting-photography style, neutral palette. "
+        if alternative_mode
+        else "Wide 16:9 cinematic geopolitical intelligence depiction based on verified signals and scenario dynamics; realistic consulting-photography style, neutral palette. "
+    )
+    safe_prompt = (
+        f"{safe_prompt_prefix}"
+        f"Scenario: {scenario}. Probability: {int(round(probability * 100))} percent. "
+        f"Context: {prediction_text[:220]}. "
+        "No text overlays, no logos, no faces, no gore."
+    )
+    primary_prompt = (visual_prompt_override or "").strip() or safe_prompt
+
+    async def _request_image(prompt_text: str) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=90) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/images/generations",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": "gpt-image-1",
+                    "size": "1024x1024",
+                    "prompt": prompt_text,
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+            image_row = (payload.get("data") or [{}])[0]
+            b64_image = image_row.get("b64_json")
+            image_url = image_row.get("url")
+            if not b64_image and not image_url:
+                raise ValueError("No image payload returned")
+            return {
+                "image_data_url": f"data:image/png;base64,{b64_image}" if b64_image else image_url,
+                "provider": "openai",
+                "model": "gpt-image-1",
+                "generated": True,
+                "prompt_used": prompt_text[:240],
+            }
+
+    try:
+        result = await _request_image(primary_prompt)
+        _SCENARIO_IMAGE_CACHE[cache_key] = (now, result)
+        return result
+    except Exception as primary_error:
+        if primary_prompt != safe_prompt:
+            try:
+                fallback_result = await _request_image(safe_prompt)
+                _SCENARIO_IMAGE_CACHE[cache_key] = (now, fallback_result)
+                return fallback_result
+            except Exception as fallback_error:
+                return {
+                    "image_data_url": None,
+                    "provider": "openai",
+                    "model": "gpt-image-1",
+                    "generated": False,
+                    "error": f"primary={type(primary_error).__name__}; fallback={type(fallback_error).__name__}",
+                }
+        return {
+            "image_data_url": None,
+            "provider": "openai",
+            "model": "gpt-image-1",
+            "generated": False,
+            "error": type(primary_error).__name__,
+        }
 
 
 async def _fetch_issue_signals(client: httpx.AsyncClient, issue_slug: str, limit: int) -> list[SignalItem]:
@@ -1246,9 +1931,11 @@ async def build_dashboard_snapshot(
     use_live: bool,
     lens: str = "global",
     focus: str | None = None,
+    local_ai_enabled: bool = True,
 ) -> dict[str, Any]:
     if lens not in LENS_TYPES:
         lens = "global"
+    provider_info = resolve_intelligence_provider(prefer_local_ai=local_ai_enabled)
     signals = await fetch_signals(selected_issues, use_live=use_live)
     force_scores = _aggregate_forces(signals)
     issue_pressure = _issue_pressure(selected_issues)
@@ -1281,6 +1968,9 @@ async def build_dashboard_snapshot(
         conflict_score=conflict_escalation["score"],
     )
     impacts = _build_impacts(selected_issues, force_scores, scenarios, lens=lens, focus=focus)
+    major_conflicts = _identify_major_conflicts(selected_issues, scenarios, force_scores)
+    pestel_framework = _build_pestel_framework(force_scores, lens=lens, focus=focus)
+    lens_alignment = _build_lens_alignment(lens, focus)
     consistency_notes = _consistency_warnings(top_state, trend, criticality, conflict_escalation)
     expert_review = _build_expert_review(
         top_state=top_state,
@@ -1306,6 +1996,43 @@ async def build_dashboard_snapshot(
         "rationale": "Consensus from driving-forces, game-theory utility, and finite chessboard best-response simulation.",
     }
 
+    analysis_provenance = {
+        "tier_resolution_order": ["tier1-edge", "tier2-deep", "tier3-deterministic"],
+        "active_provider": provider_info["provider"],
+        "active_tier": provider_info["tier"],
+        "llm_enabled": provider_info["llm_enabled"],
+        "model_version": provider_info["model_version"],
+        "areas": [
+            {"area": "signal scoring", "engine": provider_info["provider"] if provider_info["llm_enabled"] else "deterministic"},
+            {"area": "force split", "engine": "deterministic"},
+            {"area": "scenario fusion", "engine": "deterministic"},
+            {"area": "consensus brief", "engine": provider_info["provider"] if provider_info["llm_enabled"] else "deterministic"},
+            {"area": "impact reweighting", "engine": "deterministic"},
+        ],
+        "notes": "Current deployment defaults to deterministic anchor; LLM tiers activate only when provider credentials/runtime are available.",
+    }
+
+    intelligence_metadata = _build_intelligence_metadata(
+        provider_info,
+        confidence_score=0.68 if provider_info["llm_enabled"] else 0.58,
+        reasoning_tokens="Composite outcome derived from force scoring, three-method scenario fusion, and lens-aware impact reweighting.",
+    )
+    creative_prediction = await _generate_creative_prediction_payload(
+        selected_issues=selected_issues,
+        scenario=next_forecast["scenario"],
+        probability=float(next_forecast["probability"]),
+        prediction_text=prediction,
+        alternative_mode=False,
+    )
+    scenario_visual = await _generate_ai_scenario_image(
+        scenario=next_forecast["scenario"],
+        probability=float(next_forecast["probability"]),
+        prediction_text=prediction,
+        alternative_mode=False,
+        visual_prompt_override=creative_prediction.get("visual_prompt") or None,
+    )
+    refresh_policy = _recommended_refresh_policy(use_live=use_live, signals=signals)
+
     return {
         "generated_utc": datetime.now(UTC).isoformat(),
         "mode": "live" if use_live else "demo",
@@ -1325,9 +2052,160 @@ async def build_dashboard_snapshot(
         "overall_criticality": criticality,
         "conflict_escalation": conflict_escalation,
         "consistency_notes": consistency_notes,
+        "major_conflicts": major_conflicts,
+        "pestel_framework": pestel_framework,
+        "lens_alignment": lens_alignment,
+        "analysis_provenance": analysis_provenance,
+        "intelligence_metadata": intelligence_metadata,
+        "creative_prediction": creative_prediction,
+        "scenario_visual": scenario_visual,
+        "update_policy": refresh_policy,
+        "alternative_intelligence": {
+            "disclaimer": "Alternative/esoteric sources are not validated truth. Use for narrative-monitoring only.",
+            "sources": ALTERNATIVE_SOURCE_FEEDS,
+        },
         "expert_review": expert_review,
         "impacts": impacts,
-        "signals": _normalize_items(signals, limit=20),
+        "signals": _normalize_items(signals, limit=20, provider_info=provider_info, use_live=use_live),
         "explanation": explanation,
         "prediction": prediction,
+    }
+
+
+async def build_alternative_snapshot(
+    selected_issues: list[str],
+    *,
+    use_live: bool,
+    lens: str = "global",
+    focus: str | None = None,
+    local_ai_enabled: bool = True,
+) -> dict[str, Any]:
+    base = await build_dashboard_snapshot(
+        selected_issues,
+        use_live=use_live,
+        lens=lens,
+        focus=focus,
+        local_ai_enabled=local_ai_enabled,
+    )
+    provider_info = {
+        "provider": base.get("intelligence_metadata", {}).get("provider", "deterministic"),
+        "model_version": base.get("intelligence_metadata", {}).get("model_version", "heuristic-v1"),
+    }
+    generated_at = datetime.now(UTC)
+    alternative_signals = _build_alternative_signals(
+        selected_issues,
+        provider_info=provider_info,
+        generated_at=generated_at,
+    )
+    alt_signal_items = _alternative_rows_to_signal_items(alternative_signals)
+    issue_pressure = _issue_pressure(selected_issues)
+    theme_rows = _build_alternative_theme_matrix(selected_issues, issue_pressure)
+
+    base_force_scores = {row["name"]: float(row["score"]) for row in base.get("forces", [])}
+    for force in FORCE_KEYWORDS:
+        base_force_scores.setdefault(force, FORCE_PRIORS.get(force, 0.1))
+    alt_force_scores = base_force_scores.copy()
+    for theme in theme_rows:
+        theme_weight = float(theme["score"])
+        for force_name, bump in (theme.get("force_bias") or {}).items():
+            alt_force_scores[force_name] = alt_force_scores.get(force_name, 0.0) + (float(bump) * theme_weight)
+    alt_force_scores = _normalize_force_distribution(alt_force_scores)
+
+    alt_driving = _driving_forces_method(alt_force_scores)
+    alt_game = _game_theory_method(alt_force_scores, min(1.0, issue_pressure + 0.06))
+    alt_chess, alt_actor_moves = _chessboard_method(alt_force_scores, min(1.0, issue_pressure + 0.08), iterations=4)
+    alt_scenarios, alt_meta = _consensus_scenarios(
+        alt_driving,
+        alt_game,
+        alt_chess,
+        force_totals=alt_force_scores,
+        issue_pressure=min(1.0, issue_pressure + 0.08),
+        trend=base.get("trend", "stable"),
+    )
+    alt_conflict = _calculate_conflict_escalation(alt_scenarios, alt_force_scores, min(1.0, issue_pressure + 0.08))
+    alt_criticality = _calculate_overall_criticality(
+        alt_scenarios,
+        alt_force_scores,
+        lens,
+        min(1.0, issue_pressure + 0.08),
+        conflict_score=alt_conflict["score"],
+    )
+    alt_impacts = _build_impacts(selected_issues, alt_force_scores, alt_scenarios, lens=lens, focus=focus)
+    alt_expert = _build_expert_review(
+        top_state=base.get("current_state", {}).get("label", "Managed tension"),
+        trend=base.get("trend", "stable"),
+        conflict_escalation=alt_conflict,
+        overall_criticality=alt_criticality,
+        impacts=alt_impacts,
+    )
+    alt_prediction = (
+        "Alternative blended outlook: verified channels plus rumor/esoteric pressure suggest "
+        f"{alt_scenarios[0]['name'].lower()} remains the strongest narrative path."
+    ) if alt_scenarios else "Alternative blended outlook pending."
+    alt_creative_prediction = await _generate_creative_prediction_payload(
+        selected_issues=selected_issues,
+        scenario=alt_scenarios[0]["name"] if alt_scenarios else "Alternative scenario pending",
+        probability=float(alt_scenarios[0]["probability"]) if alt_scenarios else 0.0,
+        prediction_text=alt_prediction,
+        alternative_mode=True,
+    )
+    alt_visual = await _generate_ai_scenario_image(
+        scenario=alt_scenarios[0]["name"] if alt_scenarios else "Alternative scenario pending",
+        probability=float(alt_scenarios[0]["probability"]) if alt_scenarios else 0.0,
+        prediction_text=alt_prediction,
+        alternative_mode=True,
+        visual_prompt_override=alt_creative_prediction.get("visual_prompt") or None,
+    )
+    merged_signals = (base.get("signals", [])[:10]) + alternative_signals[:10]
+    refresh_policy = _recommended_refresh_policy(use_live=use_live, signals=alt_signal_items)
+
+    return {
+        **base,
+        "mode": "alternative",
+        "forces": [{"name": name, "score": score} for name, score in sorted(alt_force_scores.items(), key=lambda item: item[1], reverse=True)],
+        "scenarios": alt_scenarios,
+        "scenario_methods": {
+            "driving_forces": alt_driving,
+            "game_theory": alt_game,
+            "chessboard": alt_chess,
+            "consensus": {"rows": alt_scenarios, **alt_meta},
+        },
+        "next_scenario_forecast": {
+            "scenario": alt_scenarios[0]["name"] if alt_scenarios else "Unknown",
+            "probability": alt_scenarios[0]["probability"] if alt_scenarios else 0.0,
+            "horizon_steps": 4,
+            "actor_moves": alt_actor_moves,
+            "rationale": "Alternative blend from verified signals + rumor streams + esoteric/ideological narrative overlays.",
+        },
+        "overall_criticality": alt_criticality,
+        "conflict_escalation": alt_conflict,
+        "impacts": alt_impacts,
+        "expert_review": alt_expert,
+        "signals": merged_signals,
+        "prediction": alt_prediction,
+        "creative_prediction": alt_creative_prediction,
+        "explanation": (
+            "This page blends verified feeds with rumors, speculative/esoteric framing, and conspiracy-adjacent narratives. "
+            "Use as alternative narrative pressure index, not validated truth."
+        ),
+        "scenario_visual": alt_visual,
+        "update_policy": refresh_policy,
+        "analysis_provenance": {
+            **base.get("analysis_provenance", {}),
+            "areas": [
+                {"area": "verified signal ingestion", "engine": "live-rss"},
+                {"area": "rumor/gossip ingestion", "engine": "alternative-source-cluster"},
+                {"area": "esoteric theme overlay", "engine": "deterministic-theme-matrix"},
+                {"area": "scenario fusion", "engine": provider_info["provider"] if base.get("analysis_provenance", {}).get("llm_enabled") else "deterministic"},
+            ],
+            "notes": "Alternative page uses mixed verified and non-verified channels with explicit theme overlays.",
+        },
+        "alternative_intelligence": {
+            "disclaimer": (
+                "Alternative/esoteric/conspiracy-adjacent sources are for narrative contrast only. "
+                "Treat as low-confidence until verified."
+            ),
+            "sources": ALTERNATIVE_SOURCE_FEEDS,
+            "themes": theme_rows,
+        },
     }

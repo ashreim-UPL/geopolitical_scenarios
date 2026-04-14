@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "geostate/contracts/snapshot.schema.json",
+  "title": "DashboardSnapshot",
+  "type": "object",
+  "required": [
+    "generated_utc",
+    "mode",
+    "intelligence_metadata"
+  ],
+  "properties": {
+    "generated_utc": { "type": "string", "format": "date-time" },
+    "mode": { "type": "string", "enum": ["live", "demo"] },
+    "intelligence_metadata": {
+      "type": "object",
+      "required": ["provider", "reasoning_tokens", "confidence_score", "model_version"],
+      "properties": {
+        "provider": { "type": "string", "enum": ["nano", "gemini-cloud", "openai", "deterministic"] },
+        "reasoning_tokens": { "type": "string", "minLength": 1 },
+        "confidence_score": { "type": "number", "minimum": 0, "maximum": 1 },
+        "model_version": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": true
+}
+

@@ -13,7 +13,8 @@
     "source_ids",
     "extraction_confidence",
     "severity_score",
-    "novelty_score"
+    "novelty_score",
+    "intelligence_metadata"
   ],
   "properties": {
     "event_id": { "type": "string", "minLength": 1 },
@@ -37,10 +38,20 @@
     "extraction_confidence": { "type": "number", "minimum": 0, "maximum": 1 },
     "severity_score": { "type": "number", "minimum": 0, "maximum": 1 },
     "novelty_score": { "type": "number", "minimum": 0, "maximum": 1 },
+    "intelligence_metadata": {
+      "type": "object",
+      "required": ["provider", "reasoning_tokens", "confidence_score", "model_version"],
+      "properties": {
+        "provider": { "type": "string", "enum": ["nano", "gemini-cloud", "openai", "deterministic"] },
+        "reasoning_tokens": { "type": "string", "minLength": 1 },
+        "confidence_score": { "type": "number", "minimum": 0, "maximum": 1 },
+        "model_version": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
     "attribution_status": { "type": "string" },
     "narrative_tags": { "type": "array", "items": { "type": "string" } },
     "linked_scenarios": { "type": "array", "items": { "type": "string" } }
   },
   "additionalProperties": false
 }
-
