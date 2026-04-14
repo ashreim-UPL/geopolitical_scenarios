@@ -346,35 +346,51 @@ function GaugeDial({
   const startAngle = -140;
   const endAngle = 140;
   const angle = startAngle + (endAngle - startAngle) * clamped;
-  const needle = polarToCartesian(78, 78, 48, angle);
+  const needle = polarToCartesian(88, 88, 56, angle);
+  const glow = severityColor(clamped);
 
   return (
     <article className="gauge-card">
       <p className="gauge-title">{title}</p>
-      <svg viewBox="0 0 156 118" className="gauge-svg" role="img" aria-label={`${title} gauge`}>
+      <svg viewBox="0 0 176 128" className="gauge-svg" role="img" aria-label={`${title} gauge`}>
         <defs>
           <linearGradient id={`${title.replace(/\s+/g, "-")}-grad`} x1="0%" y1="0%" x2="100%" y2="0%">
             <stop offset="0%" stopColor="#22c55e" />
-            <stop offset="50%" stopColor="#f59e0b" />
+            <stop offset="40%" stopColor="#eab308" />
+            <stop offset="70%" stopColor="#f97316" />
             <stop offset="100%" stopColor="#ef4444" />
           </linearGradient>
+          <filter id={`${title.replace(/\s+/g, "-")}-blur`}>
+            <feGaussianBlur stdDeviation="2" />
+          </filter>
         </defs>
-        <path d={arcPath(78, 78, 58, startAngle, endAngle)} stroke="#1f2937" strokeWidth="10" fill="none" />
+        <path d={arcPath(88, 88, 68, startAngle, endAngle)} stroke="#1f2937" strokeWidth="12" fill="none" />
         <path
-          d={arcPath(78, 78, 58, startAngle, endAngle)}
+          d={arcPath(88, 88, 68, startAngle, endAngle)}
           stroke={`url(#${title.replace(/\s+/g, "-")}-grad)`}
-          strokeWidth="10"
+          strokeWidth="12"
           fill="none"
           strokeLinecap="round"
         />
-        <text x="16" y="108" className="gauge-scale">0</text>
-        <text x="72" y="108" className="gauge-scale">50</text>
-        <text x="128" y="108" className="gauge-scale">100</text>
-        <line x1="78" y1="78" x2={needle.x} y2={needle.y} stroke={severityColor(clamped)} strokeWidth="3" strokeLinecap="round" />
-        <circle cx="78" cy="78" r="5" fill="#e2e8f0" />
-        <text x="78" y="66" textAnchor="middle" className="gauge-percent">{percent}</text>
-        <text x="78" y="80" textAnchor="middle" className="gauge-unit">/100</text>
-        <text x="78" y="94" textAnchor="middle" className="gauge-band">{band}</text>
+        <line x1="88" y1="88" x2={needle.x} y2={needle.y} stroke={glow} strokeWidth="4" strokeLinecap="round" />
+        <line
+          x1="88"
+          y1="88"
+          x2={needle.x}
+          y2={needle.y}
+          stroke={glow}
+          strokeWidth="7"
+          strokeLinecap="round"
+          opacity="0.26"
+          filter={`url(#${title.replace(/\s+/g, "-")}-blur)`}
+        />
+        <circle cx="88" cy="88" r="5.5" fill="#e2e8f0" />
+        <text x="88" y="74" textAnchor="middle" className="gauge-percent">{percent}</text>
+        <text x="88" y="88" textAnchor="middle" className="gauge-unit">/100</text>
+        <text x="88" y="102" textAnchor="middle" className="gauge-band">{band}</text>
+        <text x="16" y="120" className="gauge-scale">0</text>
+        <text x="84" y="120" className="gauge-scale">50</text>
+        <text x="154" y="120" className="gauge-scale">100</text>
       </svg>
     </article>
   );
@@ -637,57 +653,58 @@ export default function HomePage() {
         </div>
       </section>
 
-      <section className="panel compact">
-        <h2>Issue Buckets</h2>
-        <p className="muted mini">Multi-select list (Ctrl/Cmd + Click)</p>
-        <select className="multi-select" size={4} multiple value={selectedIssues} onChange={handleIssueMultiSelect}>
-          {issues.map((issue) => (
-            <option key={issue.slug} value={issue.slug}>
-              {issue.label}
-            </option>
-          ))}
-        </select>
-        <p className="muted mini">Selected: {selectedIssues.length}</p>
-      </section>
-
-      <section className="panel compact">
-        <h2>Impact Lens</h2>
-        <div className="lens-row">
-          <div className="chip-grid">
-            {(["global", "region", "country"] as const).map((lens) => (
-              <button
-                type="button"
-                key={lens}
-                className={lensType === lens ? "chip selected" : "chip"}
-                onClick={() => setLensType(lens)}
-              >
-                {lens}
-              </button>
+      <section className="panel compact controls-line">
+        <div className="control-block">
+          <h2>Issue Buckets</h2>
+          <p className="muted mini">Multi-select (Ctrl/Cmd + Click)</p>
+          <select className="multi-select" size={4} multiple value={selectedIssues} onChange={handleIssueMultiSelect}>
+            {issues.map((issue) => (
+              <option key={issue.slug} value={issue.slug}>
+                {issue.label}
+              </option>
             ))}
-          </div>
-          {lensType === "region" && (
-            <select className="lens-select" value={regionFocus} onChange={(event) => setRegionFocus(event.target.value)}>
-              {regionFocusOptions.map((option) => (
-                <option key={option} value={option}>
-                  {option}
-                </option>
-              ))}
-            </select>
-          )}
-          {lensType === "country" && (
-            <select className="lens-select" value={countryFocus} onChange={(event) => setCountryFocus(event.target.value)}>
-              {countryFocusOptions.map((option) => (
-                <option key={option} value={option}>
-                  {option}
-                </option>
-              ))}
-            </select>
-          )}
+          </select>
+          <p className="muted mini">Selected: {selectedIssues.length}</p>
         </div>
-        <p className="muted mini">
-          Active lens: {lensType}
-          {activeLensFocus ? ` (${activeLensFocus})` : ""}
-        </p>
+        <div className="control-block">
+          <h2>Impact Lens</h2>
+          <div className="lens-row">
+            <div className="chip-grid">
+              {(["global", "region", "country"] as const).map((lens) => (
+                <button
+                  type="button"
+                  key={lens}
+                  className={lensType === lens ? "chip selected" : "chip"}
+                  onClick={() => setLensType(lens)}
+                >
+                  {lens}
+                </button>
+              ))}
+            </div>
+            {lensType === "region" && (
+              <select className="lens-select" value={regionFocus} onChange={(event) => setRegionFocus(event.target.value)}>
+                {regionFocusOptions.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            )}
+            {lensType === "country" && (
+              <select className="lens-select" value={countryFocus} onChange={(event) => setCountryFocus(event.target.value)}>
+                {countryFocusOptions.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+          <p className="muted mini">
+            Active lens: {lensType}
+            {activeLensFocus ? ` (${activeLensFocus})` : ""}
+          </p>
+        </div>
       </section>
 
       <section className="panel compact monetization-panel">

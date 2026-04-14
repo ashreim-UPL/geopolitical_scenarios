@@ -60,35 +60,38 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  gap: 0.75rem;
+  gap: 0.9rem;
 }
 
 .hero-gauges {
-  background: rgba(15, 23, 35, 0.75);
+  background: linear-gradient(160deg, rgba(10, 20, 35, 0.92), rgba(18, 33, 57, 0.9));
   border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 0.5rem 0.6rem;
+  border-radius: 14px;
+  padding: 0.55rem 0.62rem;
   min-width: 380px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 8px 30px rgba(2, 6, 23, 0.35);
 }
 
 .gauge-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 0.55rem;
+  gap: 0.5rem;
 }
 
 .gauge-card {
   border: 1px solid var(--border);
-  background: rgba(15, 23, 35, 0.6);
-  border-radius: 10px;
-  padding: 0.4rem;
+  background: linear-gradient(180deg, rgba(8, 18, 31, 0.95), rgba(12, 24, 40, 0.88));
+  border-radius: 12px;
+  padding: 0.45rem;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 
 .gauge-title {
-  margin: 0 0 0.2rem;
+  margin: 0 0 0.15rem;
   color: #cbd5e1;
-  font-size: 0.86rem;
-  font-weight: 600;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
 }
 
 .gauge-svg {
@@ -97,24 +100,24 @@ body {
 }
 
 .gauge-scale {
-  fill: #94a3b8;
-  font-size: 8px;
+  fill: #8da0bb;
+  font-size: 9px;
 }
 
 .gauge-percent {
   fill: #f8fafc;
-  font-size: 17px;
+  font-size: 20px;
   font-weight: 700;
 }
 
 .gauge-unit {
-  fill: #94a3b8;
-  font-size: 8px;
+  fill: #8da0bb;
+  font-size: 9px;
 }
 
 .gauge-band {
-  fill: #cbd5e1;
-  font-size: 9px;
+  fill: #dbe6f5;
+  font-size: 11px;
   font-weight: 600;
 }
 
@@ -311,8 +314,8 @@ body {
 
 .multi-select {
   width: 100%;
-  min-height: 68px;
-  max-height: 94px;
+  min-height: 76px;
+  max-height: 110px;
   background: rgba(15, 23, 35, 0.8);
   color: var(--text);
   border: 1px solid var(--border);
@@ -323,6 +326,17 @@ body {
 
 .multi-select option {
   padding: 0.12rem;
+}
+
+.controls-line {
+  display: grid;
+  grid-template-columns: 1.5fr 1fr;
+  gap: 0.7rem;
+  align-items: start;
+}
+
+.control-block h2 {
+  margin: 0 0 0.2rem;
 }
 
 .signal-list {
@@ -542,6 +556,10 @@ body {
   }
 
   .gauge-row {
+    grid-template-columns: 1fr;
+  }
+
+  .controls-line {
     grid-template-columns: 1fr;
   }
 }
