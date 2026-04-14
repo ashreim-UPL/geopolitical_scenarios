@@ -1,12 +1,12 @@
 :root {
-  --bg: #0f1723;
-  --panel: #162234;
-  --panel-alt: #1d2d45;
+  --bg: #0d1520;
+  --panel: #111c2a;
+  --panel-alt: #152236;
   --text: #f3f4f6;
   --muted: #93a0b5;
-  --accent: #16a34a;
+  --accent: #00e5a0;
   --danger: #ef4444;
-  --border: rgba(148, 163, 184, 0.2);
+  --border: rgba(255, 255, 255, 0.06);
 }
 
 * {
@@ -19,10 +19,7 @@ body {
   padding: 0;
   min-height: 100%;
   color: var(--text);
-  background:
-    radial-gradient(circle at 0% 0%, rgba(22, 163, 74, 0.12), transparent 55%),
-    radial-gradient(circle at 100% 100%, rgba(59, 130, 246, 0.12), transparent 50%),
-    var(--bg);
+  background: var(--bg);
   font-family: "Space Grotesk", "IBM Plex Sans", "Aptos", sans-serif;
 }
 
@@ -39,21 +36,43 @@ body {
 
 .hero h1 {
   margin: 0.35rem 0;
-  line-height: 1.2;
-  font-size: clamp(1.6rem, 3.4vw, 2.2rem);
+  line-height: 1.05;
+  font-size: clamp(2.1rem, 4.2vw, 3.05rem);
+  font-weight: 800;
+  letter-spacing: -0.02em;
 }
 
 .eyebrow {
-  color: #86efac;
+  color: #6ecfb0;
   font-weight: 600;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
+  font-size: 0.66rem;
+  font-family: "IBM Plex Mono", "JetBrains Mono", "Courier New", monospace;
   margin: 0;
 }
 
 .subcopy {
   color: var(--muted);
   margin: 0.15rem 0 0;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 rgba(0, 229, 160, 0.6);
+  animation: livePulse 1.9s infinite;
+}
+
+@keyframes livePulse {
+  0% { box-shadow: 0 0 0 0 rgba(0, 229, 160, 0.5); }
+  70% { box-shadow: 0 0 0 8px rgba(0, 229, 160, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(0, 229, 160, 0); }
 }
 
 .hero {
@@ -67,22 +86,22 @@ body {
   background: linear-gradient(160deg, rgba(10, 20, 35, 0.92), rgba(18, 33, 57, 0.9));
   border: 1px solid var(--border);
   border-radius: 14px;
-  padding: 0.55rem 0.62rem;
+  padding: 0.95rem 1rem;
   min-width: 380px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 8px 30px rgba(2, 6, 23, 0.35);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 10px 28px rgba(2, 6, 23, 0.3);
 }
 
 .gauge-row {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.5rem;
+  grid-template-columns: 1.18fr 0.82fr;
+  gap: 0.8rem;
 }
 
 .gauge-card {
   border: 1px solid var(--border);
   background: linear-gradient(180deg, rgba(8, 18, 31, 0.95), rgba(12, 24, 40, 0.88));
   border-radius: 12px;
-  padding: 0.45rem;
+  padding: 0.65rem;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 
@@ -92,6 +111,14 @@ body {
   font-size: 0.82rem;
   font-weight: 700;
   letter-spacing: 0.01em;
+}
+
+.mini-label {
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 9px;
+  font-family: "IBM Plex Mono", "JetBrains Mono", "Courier New", monospace;
+  color: #7f90aa;
 }
 
 .gauge-svg {
@@ -106,7 +133,7 @@ body {
 
 .gauge-percent {
   fill: #f8fafc;
-  font-size: 20px;
+  font-size: 24px;
   font-weight: 700;
 }
 
@@ -119,6 +146,10 @@ body {
   fill: #dbe6f5;
   font-size: 11px;
   font-weight: 600;
+}
+
+.gauge-card.primary .gauge-percent {
+  font-size: 28px;
 }
 
 .mini {
@@ -167,12 +198,12 @@ body {
   background: linear-gradient(160deg, var(--panel), var(--panel-alt));
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 0.65rem;
+  padding: 1rem;
 }
 
 .panel.compact {
-  padding-top: 0.6rem;
-  padding-bottom: 0.6rem;
+  padding-top: 0.95rem;
+  padding-bottom: 0.95rem;
 }
 
 .state {
@@ -293,8 +324,8 @@ body {
 }
 
 .chip.selected {
-  background: rgba(22, 163, 74, 0.3);
-  border-color: rgba(74, 222, 128, 0.7);
+  background: rgba(0, 229, 160, 0.18);
+  border-color: rgba(0, 229, 160, 0.7);
 }
 
 .lens-row {
@@ -331,7 +362,7 @@ body {
 .controls-line {
   display: grid;
   grid-template-columns: 1.5fr 1fr;
-  gap: 0.7rem;
+  gap: 0.9rem;
   align-items: start;
 }
 
@@ -555,9 +586,13 @@ body {
 
 .map-live-grid {
   display: grid;
-  grid-template-columns: 1.05fr 0.95fr;
-  gap: 0.6rem;
+  grid-template-columns: 1.35fr 0.65fr;
+  gap: 0.7rem;
   align-items: stretch;
+}
+
+.map-live-grid.full-width {
+  width: 100%;
 }
 
 .live-tape-box {
@@ -575,42 +610,9 @@ body {
 }
 
 .live-tape-scroll {
-  max-height: 320px;
+  height: 320px;
   overflow-y: auto;
   padding-right: 0.2rem;
-}
-
-.map-legend-list {
-  list-style: none;
-  margin: 0.2rem 0 0.5rem;
-  padding: 0;
-  display: grid;
-  gap: 0.3rem;
-}
-
-.map-legend-list li {
-  display: grid;
-  grid-template-columns: 10px 1fr auto;
-  align-items: center;
-  gap: 0.45rem;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.15);
-  padding-bottom: 0.25rem;
-}
-
-.legend-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-}
-
-.legend-name {
-  color: #e5e7eb;
-  font-size: 0.9rem;
-}
-
-.legend-meta {
-  color: var(--muted);
-  font-size: 0.78rem;
 }
 
 .weight-pills {

@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import dynamic from "next/dynamic";
-import { useEffect, useMemo, useState, type ChangeEvent } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type IssueItem = {
   slug: string;
@@ -336,11 +336,13 @@ function GaugeDial({
   score,
   percent,
   band,
+  emphasis = "secondary",
 }: {
   title: string;
   score: number;
   percent: number;
   band: string;
+  emphasis?: "primary" | "secondary";
 }) {
   const clamped = Math.max(0, Math.min(1, score));
   const startAngle = -140;
@@ -350,8 +352,8 @@ function GaugeDial({
   const glow = severityColor(clamped);
 
   return (
-    <article className="gauge-card">
-      <p className="gauge-title">{title}</p>
+    <article className={`gauge-card ${emphasis}`}>
+      <p className="gauge-title mini-label">{title}</p>
       <svg viewBox="0 0 176 128" className="gauge-svg" role="img" aria-label={`${title} gauge`}>
         <defs>
           <linearGradient id={`${title.replace(/\s+/g, "-")}-grad`} x1="0%" y1="0%" x2="100%" y2="0%">
@@ -605,9 +607,13 @@ export default function HomePage() {
     return () => source.close();
   }, [selectedIssueParam, lensType, activeLensFocus]);
 
-  const handleIssueMultiSelect = (event: ChangeEvent<HTMLSelectElement>) => {
-    const values = Array.from(event.target.selectedOptions).map((option) => option.value);
-    setSelectedIssues(values);
+  const toggleIssue = (slug: string) => {
+    setSelectedIssues((prev) => {
+      if (prev.includes(slug)) {
+        return prev.filter((s) => s !== slug);
+      }
+      return [...prev, slug];
+    });
   };
 
   return (
@@ -617,7 +623,7 @@ export default function HomePage() {
           <p className="eyebrow">Geopolitical State Engine</p>
           <h1>One-page scenario command dashboard</h1>
           <p className="subcopy">
-            {snapshot?.mode?.toUpperCase() ?? "LIVE"} feed | {snapshot?.generated_utc ? new Date(snapshot.generated_utc).toLocaleString() : "updating"}
+            <span className="live-dot" /> {snapshot?.mode?.toUpperCase() ?? "LIVE"} feed | {snapshot?.generated_utc ? new Date(snapshot.generated_utc).toLocaleString() : "updating"}
           </p>
         </div>
         <div className="hero-gauges">
@@ -627,12 +633,14 @@ export default function HomePage() {
               score={overallCriticality}
               percent={snapshot?.overall_criticality.percent ?? Math.round(overallCriticality * 100)}
               band={snapshot?.overall_criticality.band ?? severityBandFromScore(overallCriticality)}
+              emphasis="primary"
             />
             <GaugeDial
               title="Conflict Escalation"
               score={snapshot?.conflict_escalation.score ?? 0}
               percent={snapshot?.conflict_escalation.percent ?? Math.round((snapshot?.conflict_escalation.score ?? 0) * 100)}
               band={snapshot?.conflict_escalation.band ?? "Unknown"}
+              emphasis="secondary"
             />
           </div>
           <details>
@@ -656,18 +664,29 @@ export default function HomePage() {
       <section className="panel compact controls-line">
         <div className="control-block">
           <h2>Issue Buckets</h2>
-          <p className="muted mini">Multi-select (Ctrl/Cmd + Click)</p>
-          <select className="multi-select" size={4} multiple value={selectedIssues} onChange={handleIssueMultiSelect}>
-            {issues.map((issue) => (
-              <option key={issue.slug} value={issue.slug}>
-                {issue.label}
-              </option>
-            ))}
-          </select>
-          <p className="muted mini">Selected: {selectedIssues.length}</p>
+          <p className="muted mini-label">Toggle issue buckets</p>
+          <div className="chip-grid">
+            {issues.map((issue) => {
+              const selected = selectedIssues.includes(issue.slug);
+              return (
+                <button
+                  type="button"
+                  key={issue.slug}
+                  className={selected ? "chip selected" : "chip"}
+                  onClick={() => toggleIssue(issue.slug)}
+                >
+                  {issue.label}
+                </button>
+              );
+            })}
+          </div>
+          <p className="muted mini">
+            Active: {selectedIssues.length}
+          </p>
         </div>
         <div className="control-block">
           <h2>Impact Lens</h2>
+          <p className="muted mini-label">Global / region / country scope</p>
           <div className="lens-row">
             <div className="chip-grid">
               {(["global", "region", "country"] as const).map((lens) => (
@@ -704,6 +723,47 @@ export default function HomePage() {
             Active lens: {lensType}
             {activeLensFocus ? ` (${activeLensFocus})` : ""}
           </p>
+        </div>
+      </section>
+
+      <section className="panel">
+        <h2>{lensType === "country" ? "Country Focus Impact Map" : "Country Impact Map"}</h2>
+        <div className="map-live-grid full-width">
+          <div className="country-map-wrap">
+            <ImpactMap points={countryMapPoints} lensType={lensType} lensFocus={activeLensFocus} />
+            <p className="muted mini">OpenStreetMap overlay. Color = severity, larger marker = direct exposure.</p>
+          </div>
+          <div className="live-tape-box">
+            <h3>Live Update Tape</h3>
+            {loading && <p className="muted mini">Refreshing...</p>}
+            {error && <p className="error">{error}</p>}
+            <div className="live-tape-scroll">
+              <ul className="signal-list">
+                {(snapshot?.signals ?? []).map((signal) => (
+                  <li key={`${signal.link}-${signal.title}`}>
+                    <a href={signal.link} target="_blank" rel="noreferrer">{signal.title}</a>
+                    <p className="muted">
+                      {signal.source} | {signal.issue} | {signal.published_utc ? new Date(signal.published_utc).toLocaleTimeString() : "time unknown"}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="panel">
+        <h2>Region / Worldwide Impact</h2>
+        <div className="impact-grid">
+          {(snapshot?.impacts.regions_world ?? []).map((item) => (
+            <div key={item.label} className="impact-card">
+              <p>{item.label}</p>
+              <div className="mini-battery"><div className="mini-battery-fill" style={{ width: `${Math.round(item.severity * 100)}%`, background: severityColor(item.severity) }} /></div>
+              <strong>{impactLevel(item.severity)} impact | {severityBandFromScore(item.severity)} severity</strong>
+              <p className="muted mini">{item.summary}</p>
+            </div>
+          ))}
         </div>
       </section>
 
@@ -910,75 +970,6 @@ export default function HomePage() {
             Final hierarchy risk: {impactLevel(snapshot?.impacts.maslow_hierarchy.hierarchy_score ?? 0)} impact (
             {snapshot?.impacts.maslow_hierarchy.band ?? "Unknown"} severity)
           </p>
-        </article>
-      </section>
-
-      <section className="grid-2">
-        {lensType !== "country" && (
-          <article className="panel">
-            <h2>Region / Worldwide Impact</h2>
-            <div className="impact-grid">
-              {(snapshot?.impacts.regions_world ?? []).map((item) => (
-                <div key={item.label} className="impact-card">
-                  <p>{item.label}</p>
-                  <div className="mini-battery"><div className="mini-battery-fill" style={{ width: `${Math.round(item.severity * 100)}%`, background: severityColor(item.severity) }} /></div>
-                  <strong>{impactLevel(item.severity)} impact | {severityBandFromScore(item.severity)} severity</strong>
-                  <p className="muted mini">{item.summary}</p>
-                </div>
-              ))}
-            </div>
-          </article>
-        )}
-        <article className="panel">
-          <h2>{lensType === "country" ? "Country Focus Impact" : "Country Impact"}</h2>
-          <div className="map-live-grid">
-            <div className="country-map-wrap">
-              <ImpactMap points={countryMapPoints} lensType={lensType} lensFocus={activeLensFocus} />
-              <p className="muted mini">OpenStreetMap overlay. Color = severity, larger marker = direct exposure.</p>
-            </div>
-            <div className="live-tape-box">
-              <h3>Live Update Tape</h3>
-              {loading && <p className="muted mini">Refreshing...</p>}
-              {error && <p className="error">{error}</p>}
-              <div className="live-tape-scroll">
-                <ul className="signal-list">
-                  {(snapshot?.signals ?? []).map((signal) => (
-                    <li key={`${signal.link}-${signal.title}`}>
-                      <a href={signal.link} target="_blank" rel="noreferrer">{signal.title}</a>
-                      <p className="muted">
-                        {signal.source} | {signal.issue} | {signal.published_utc ? new Date(signal.published_utc).toLocaleTimeString() : "time unknown"}
-                      </p>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </div>
-          </div>
-          <ul className="map-legend-list">
-            {[...visibleCountries]
-              .sort((a, b) => b.severity - a.severity)
-              .map((item) => (
-                <li key={`legend-${item.label}`}>
-                  <span className="legend-dot" style={{ background: severityColor(item.severity) }} />
-                  <span className="legend-name">{item.label}</span>
-                  <span className="legend-meta">{impactLevel(item.severity)} | {severityBandFromScore(item.severity)} | {item.directness ?? "indirect"}</span>
-                </li>
-              ))}
-          </ul>
-          {visibleCountries.length === 0 && <p className="muted mini">No mapped country impact data for the current selection.</p>}
-          <details>
-            <summary>{lensType === "country" ? "Focused Country In Active Regions" : "Countries In Active Regions"}</summary>
-            <div className="region-country-list">
-              {(snapshot?.impacts.countries_by_region ?? []).map((group) => (
-                <div key={group.region} className="region-country-group">
-                  <p><strong>{group.region}</strong></p>
-                  <p className="muted mini">
-                    {group.countries.map((row) => `${row.name} (${row.directness})`).join(", ")}
-                  </p>
-                </div>
-              ))}
-            </div>
-          </details>
         </article>
       </section>
 
