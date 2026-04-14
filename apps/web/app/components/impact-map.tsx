@@ -28,19 +28,24 @@ const REGION_VIEW: Record<string, { center: [number, number]; zoom: number }> = 
 };
 
 function severityColor(value: number): string {
-  if (value >= 0.8) {
-    return "#ef4444";
+  if (value >= 0.78) {
+    return "#e24b4a";
   }
-  if (value >= 0.6) {
-    return "#f97316";
+  if (value >= 0.52) {
+    return "#ef9f27";
   }
-  if (value >= 0.4) {
-    return "#f59e0b";
+  if (value >= 0.3) {
+    return "#378add";
   }
-  if (value >= 0.2) {
-    return "#84cc16";
-  }
-  return "#22c55e";
+  return "#1d9e75";
+}
+
+function hexToRgba(hex: string, alpha: number): string {
+  const clean = hex.replace("#", "");
+  const r = Number.parseInt(clean.slice(0, 2), 16);
+  const g = Number.parseInt(clean.slice(2, 4), 16);
+  const b = Number.parseInt(clean.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
 function boundsFromPoints(points: MapPoint[]): L.LatLngBounds | null {
@@ -95,25 +100,52 @@ export default function ImpactMap({ points, lensType, lensFocus }: ImpactMapProp
       worldCopyJump: true,
     });
 
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    map.attributionControl.setPrefix("");
+    L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+      subdomains: "abcd",
+      maxZoom: 19,
+      attribution:
+        '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
     }).addTo(map);
 
     points.forEach((point) => {
-      const marker = L.circleMarker([point.lat, point.lon], {
-        radius: point.directness === "direct" ? 8 : 6,
-        color: "#e2e8f0",
-        weight: 1,
-        fillColor: severityColor(point.severity),
-        fillOpacity: 0.9,
+      const color = severityColor(point.severity);
+      const ringRadiusMeters = Math.round(
+        (point.directness === "direct" ? 170000 : 240000) + (point.severity * 620000)
+      );
+
+      L.circle([point.lat, point.lon], {
+        color,
+        fillColor: hexToRgba(color, 0.18),
+        fillOpacity: 1,
+        weight: 1.5,
+        radius: ringRadiusMeters,
+        opacity: 0.85,
       }).addTo(map);
 
-      marker.bindTooltip(point.label, {
-        permanent: true,
-        direction: "top",
-        offset: [0, -10],
-        opacity: 0.9,
-      });
+      const marker = L.circleMarker([point.lat, point.lon], {
+        radius: point.directness === "direct" ? 6 : 5,
+        color,
+        weight: 2,
+        fillColor: color,
+        fillOpacity: 1,
+      }).addTo(map);
+
+      const status =
+        point.severity >= 0.78
+          ? "DIRECT CONFLICT"
+          : point.severity >= 0.52
+            ? "ELEVATED TENSION"
+            : point.severity >= 0.3
+              ? "SYSTEMIC RISK"
+              : "MONITORING";
+      marker.bindPopup(
+        `<div style="min-width:180px;">
+          <div style="font-size:10px;letter-spacing:0.06em;color:#6b7a99;margin-bottom:4px;">${status}</div>
+          <div style="font-weight:600;font-size:13px;margin-bottom:6px;color:#e2e8f4;">${point.label}</div>
+          <div style="font-size:11px;color:#8898b8;line-height:1.5;">Exposure: ${point.directness}</div>
+        </div>`
+      );
     });
 
     const bounds = boundsFromPoints(points);
@@ -137,5 +169,17 @@ export default function ImpactMap({ points, lensType, lensFocus }: ImpactMapProp
     };
   }, [points, lensType, lensFocus]);
 
-  return <div ref={containerRef} className="country-map" />;
+  return (
+    <div className="country-map-shell">
+      <div className="risk-map-title">Geopolitical Risk Map</div>
+      <div ref={containerRef} className="country-map" />
+      <div className="risk-map-legend">
+        <div className="risk-map-legend-title">Risk Status</div>
+        <div className="risk-map-legend-item"><span className="risk-dot red" />Direct conflict zone</div>
+        <div className="risk-map-legend-item"><span className="risk-dot amber" />Elevated / active tension</div>
+        <div className="risk-map-legend-item"><span className="risk-dot blue" />Indirect / systemic risk</div>
+        <div className="risk-map-legend-item"><span className="risk-dot green" />Monitoring / stable</div>
+      </div>
+    </div>
+  );
 }
