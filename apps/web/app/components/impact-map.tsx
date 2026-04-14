@@ -1,8 +1,8 @@
 "use client";
 
 import "leaflet/dist/leaflet.css";
-import { LatLngBoundsExpression } from "leaflet";
-import { CircleMarker, MapContainer, TileLayer, Tooltip } from "react-leaflet";
+import L from "leaflet";
+import { useEffect, useRef } from "react";
 
 type MapPoint = {
   label: string;
@@ -43,7 +43,7 @@ function severityColor(value: number): string {
   return "#22c55e";
 }
 
-function boundsFromPoints(points: MapPoint[]): LatLngBoundsExpression | null {
+function boundsFromPoints(points: MapPoint[]): L.LatLngBounds | null {
   if (points.length === 0) {
     return null;
   }
@@ -55,46 +55,73 @@ function boundsFromPoints(points: MapPoint[]): LatLngBoundsExpression | null {
   const maxLon = Math.max(...lons);
   const latPad = Math.max((maxLat - minLat) * 0.35, 4);
   const lonPad = Math.max((maxLon - minLon) * 0.35, 6);
-  return [
-    [minLat - latPad, minLon - lonPad],
-    [maxLat + latPad, maxLon + lonPad],
-  ];
+  return L.latLngBounds(
+    L.latLng(minLat - latPad, minLon - lonPad),
+    L.latLng(maxLat + latPad, maxLon + lonPad)
+  );
 }
 
 export default function ImpactMap({ points, lensType, lensFocus }: ImpactMapProps) {
-  const pointBounds = boundsFromPoints(points);
-  const regionPreset = REGION_VIEW[lensFocus];
-  const defaultCenter: [number, number] = [20, 10];
-  const defaultZoom = lensType === "global" ? 2 : 3;
-  const mapKey = `${lensType}:${lensFocus}:${points.map((p) => `${p.label}-${p.lat}-${p.lon}`).join("|")}`;
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const mapRef = useRef<L.Map | null>(null);
 
-  return (
-    <MapContainer
-      key={mapKey}
-      className="country-map"
-      center={regionPreset?.center ?? defaultCenter}
-      zoom={regionPreset?.zoom ?? defaultZoom}
-      bounds={lensType === "global" && points.length === 0 ? undefined : pointBounds ?? undefined}
-      worldCopyJump
-      scrollWheelZoom={false}
-      zoomControl
-    >
-      <TileLayer
-        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-      />
-      {points.map((point) => (
-        <CircleMarker
-          key={`${point.label}-${point.lat}-${point.lon}`}
-          center={[point.lat, point.lon]}
-          radius={point.directness === "direct" ? 8 : 6}
-          pathOptions={{ color: "#e2e8f0", weight: 1, fillColor: severityColor(point.severity), fillOpacity: 0.9 }}
-        >
-          <Tooltip permanent direction="top" offset={[0, -10]} opacity={0.9}>
-            {point.label}
-          </Tooltip>
-        </CircleMarker>
-      ))}
-    </MapContainer>
-  );
+  useEffect(() => {
+    if (!containerRef.current) {
+      return;
+    }
+
+    if (mapRef.current) {
+      mapRef.current.remove();
+      mapRef.current = null;
+    }
+
+    const regionPreset = REGION_VIEW[lensFocus];
+    const defaultCenter: [number, number] = [20, 10];
+    const defaultZoom = lensType === "global" ? 2 : 3;
+
+    const map = L.map(containerRef.current, {
+      center: regionPreset?.center ?? defaultCenter,
+      zoom: regionPreset?.zoom ?? defaultZoom,
+      zoomControl: true,
+      scrollWheelZoom: false,
+      worldCopyJump: true,
+    });
+
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    }).addTo(map);
+
+    points.forEach((point) => {
+      const marker = L.circleMarker([point.lat, point.lon], {
+        radius: point.directness === "direct" ? 8 : 6,
+        color: "#e2e8f0",
+        weight: 1,
+        fillColor: severityColor(point.severity),
+        fillOpacity: 0.9,
+      }).addTo(map);
+
+      marker.bindTooltip(point.label, {
+        permanent: true,
+        direction: "top",
+        offset: [0, -10],
+        opacity: 0.9,
+      });
+    });
+
+    const bounds = boundsFromPoints(points);
+    if (bounds) {
+      map.fitBounds(bounds, { padding: [16, 16], maxZoom: lensType === "country" ? 6 : 5 });
+    } else if (lensType === "global") {
+      map.setView([18, 5], 2);
+    }
+
+    mapRef.current = map;
+    return () => {
+      map.remove();
+      mapRef.current = null;
+    };
+  }, [points, lensType, lensFocus]);
+
+  return <div ref={containerRef} className="country-map" />;
 }
+
