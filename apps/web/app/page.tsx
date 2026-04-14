@@ -316,6 +316,70 @@ ${bars}
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 }
 
+function polarToCartesian(cx: number, cy: number, radius: number, angleDeg: number) {
+  const rad = ((angleDeg - 90) * Math.PI) / 180;
+  return {
+    x: cx + radius * Math.cos(rad),
+    y: cy + radius * Math.sin(rad),
+  };
+}
+
+function arcPath(cx: number, cy: number, radius: number, startAngle: number, endAngle: number) {
+  const start = polarToCartesian(cx, cy, radius, endAngle);
+  const end = polarToCartesian(cx, cy, radius, startAngle);
+  const largeArc = endAngle - startAngle <= 180 ? "0" : "1";
+  return `M ${start.x} ${start.y} A ${radius} ${radius} 0 ${largeArc} 0 ${end.x} ${end.y}`;
+}
+
+function GaugeDial({
+  title,
+  score,
+  percent,
+  band,
+}: {
+  title: string;
+  score: number;
+  percent: number;
+  band: string;
+}) {
+  const clamped = Math.max(0, Math.min(1, score));
+  const startAngle = -140;
+  const endAngle = 140;
+  const angle = startAngle + (endAngle - startAngle) * clamped;
+  const needle = polarToCartesian(78, 78, 48, angle);
+
+  return (
+    <article className="gauge-card">
+      <p className="gauge-title">{title}</p>
+      <svg viewBox="0 0 156 118" className="gauge-svg" role="img" aria-label={`${title} gauge`}>
+        <defs>
+          <linearGradient id={`${title.replace(/\s+/g, "-")}-grad`} x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stopColor="#22c55e" />
+            <stop offset="50%" stopColor="#f59e0b" />
+            <stop offset="100%" stopColor="#ef4444" />
+          </linearGradient>
+        </defs>
+        <path d={arcPath(78, 78, 58, startAngle, endAngle)} stroke="#1f2937" strokeWidth="10" fill="none" />
+        <path
+          d={arcPath(78, 78, 58, startAngle, endAngle)}
+          stroke={`url(#${title.replace(/\s+/g, "-")}-grad)`}
+          strokeWidth="10"
+          fill="none"
+          strokeLinecap="round"
+        />
+        <text x="16" y="108" className="gauge-scale">0</text>
+        <text x="72" y="108" className="gauge-scale">50</text>
+        <text x="128" y="108" className="gauge-scale">100</text>
+        <line x1="78" y1="78" x2={needle.x} y2={needle.y} stroke={severityColor(clamped)} strokeWidth="3" strokeLinecap="round" />
+        <circle cx="78" cy="78" r="5" fill="#e2e8f0" />
+        <text x="78" y="66" textAnchor="middle" className="gauge-percent">{percent}</text>
+        <text x="78" y="80" textAnchor="middle" className="gauge-unit">/100</text>
+        <text x="78" y="94" textAnchor="middle" className="gauge-band">{band}</text>
+      </svg>
+    </article>
+  );
+}
+
 export default function HomePage() {
   const [issues, setIssues] = useState<IssueItem[]>([]);
   const [selectedIssues, setSelectedIssues] = useState<string[]>([
@@ -540,48 +604,37 @@ export default function HomePage() {
             {snapshot?.mode?.toUpperCase() ?? "LIVE"} feed | {snapshot?.generated_utc ? new Date(snapshot.generated_utc).toLocaleString() : "updating"}
           </p>
         </div>
-        <div className="criticality-card">
-          <p>Systemic Criticality</p>
-          <div className="battery-shell">
-            <div
-              className="battery-fill"
-              style={{ width: `${Math.round(overallCriticality * 100)}%`, background: severityColor(overallCriticality) }}
+        <div className="hero-gauges">
+          <div className="gauge-row">
+            <GaugeDial
+              title="Systemic Criticality"
+              score={overallCriticality}
+              percent={snapshot?.overall_criticality.percent ?? Math.round(overallCriticality * 100)}
+              band={snapshot?.overall_criticality.band ?? severityBandFromScore(overallCriticality)}
+            />
+            <GaugeDial
+              title="Conflict Escalation"
+              score={snapshot?.conflict_escalation.score ?? 0}
+              percent={snapshot?.conflict_escalation.percent ?? Math.round((snapshot?.conflict_escalation.score ?? 0) * 100)}
+              band={snapshot?.conflict_escalation.band ?? "Unknown"}
             />
           </div>
-          <strong style={{ color: severityColor(overallCriticality) }}>
-            {snapshot?.overall_criticality.band ?? severityBandFromScore(overallCriticality)}
-          </strong>
-          <p className="muted mini">
-            Impact: {impactLevel(overallCriticality)} | Severity:{" "}
-            {snapshot?.overall_criticality.band ?? severityBandFromScore(overallCriticality)}
-          </p>
-          <p className="muted mini">
-            Meaning: {snapshot?.overall_criticality.meaning ?? "Composite near-term instability score."}
-          </p>
           <details>
-            <summary>Formula</summary>
+            <summary>Advanced details</summary>
             <p className="muted mini">
-              Regional-war scenario ({weightRole(snapshot?.overall_criticality.formula.regional_war_escalation ?? 0)}), maritime-shock
-              ({weightRole(snapshot?.overall_criticality.formula.maritime_infrastructure_shock ?? 0)}), military force (
-              {weightRole(snapshot?.overall_criticality.formula.military_force ?? 0)}), economic force (
+              Systemic: {snapshot?.overall_criticality.meaning ?? "Composite near-term instability score."}
+            </p>
+            <p className="muted mini">
+              Conflict: {snapshot?.conflict_escalation.meaning ?? ""}
+            </p>
+            <p className="muted mini">
+              Formula: regional-war ({weightRole(snapshot?.overall_criticality.formula.regional_war_escalation ?? 0)}), maritime-shock (
+              {weightRole(snapshot?.overall_criticality.formula.maritime_infrastructure_shock ?? 0)}), military (
+              {weightRole(snapshot?.overall_criticality.formula.military_force ?? 0)}), economic (
               {weightRole(snapshot?.overall_criticality.formula.economic_force ?? 0)})
             </p>
           </details>
         </div>
-      </section>
-
-      <section className="panel compact compact-risk">
-        <h2>Conflict Escalation Likelihood</h2>
-        <div className="battery-shell">
-          <div
-            className="battery-fill"
-            style={{ width: `${snapshot?.conflict_escalation.percent ?? 0}%`, background: severityColor((snapshot?.conflict_escalation.score ?? 0)) }}
-          />
-        </div>
-        <p className="muted mini">
-          Impact: {impactLevel(snapshot?.conflict_escalation.score ?? 0)} | Severity: {snapshot?.conflict_escalation.band ?? "Unknown"} |{" "}
-          {snapshot?.conflict_escalation.meaning ?? ""}
-        </p>
       </section>
 
       <section className="panel compact">
