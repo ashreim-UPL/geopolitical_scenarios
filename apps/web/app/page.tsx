@@ -1,6 +1,7 @@
 "use client";
 
 import Image from "next/image";
+import dynamic from "next/dynamic";
 import { useEffect, useMemo, useState, type ChangeEvent } from "react";
 
 type IssueItem = {
@@ -42,6 +43,9 @@ type Snapshot = {
       rows: ScenarioRow[];
       weights: { driving_forces: number; game_theory: number; chessboard: number };
       disagreement_index: number;
+      derived_from?: string;
+      analyst_panel_consensus?: string;
+      analyst_override?: boolean;
     };
   };
   next_scenario_forecast: {
@@ -112,6 +116,7 @@ const FORCE_LABELS: Record<string, string> = {
 
 const DEFAULT_REGION_FOCUS_OPTIONS = ["Gulf", "MENA", "Europe", "East Asia", "Global shipping lanes"];
 const DEFAULT_COUNTRY_FOCUS_OPTIONS = ["United States", "China", "India"];
+const ImpactMap = dynamic(() => import("./components/impact-map"), { ssr: false });
 const COUNTRY_COORDS: Record<string, { lat: number; lon: number }> = {
   "United States": { lat: 39.8, lon: -98.6 },
   China: { lat: 35.9, lon: 104.2 },
@@ -464,45 +469,6 @@ export default function HomePage() {
       .filter((item): item is { label: string; severity: number; directness: string; lon: number; lat: number } => item !== null);
   }, [visibleCountries]);
 
-  const mapPlotPoints = useMemo(() => {
-    if (countryMapPoints.length === 0) {
-      return [];
-    }
-    const lons = countryMapPoints.map((p) => p.lon);
-    const lats = countryMapPoints.map((p) => p.lat);
-    let minLon = Math.min(...lons);
-    let maxLon = Math.max(...lons);
-    let minLat = Math.min(...lats);
-    let maxLat = Math.max(...lats);
-
-    const lonSpan = Math.max(maxLon - minLon, 20);
-    const latSpan = Math.max(maxLat - minLat, 12);
-    const lonPad = lonSpan * 0.35;
-    const latPad = latSpan * 0.35;
-    minLon -= lonPad;
-    maxLon += lonPad;
-    minLat -= latPad;
-    maxLat += latPad;
-
-    const width = 880;
-    const height = 360;
-    const innerPad = 24;
-    const plotWidth = width - innerPad * 2;
-    const plotHeight = height - innerPad * 2;
-
-    return countryMapPoints.map((p, idx) => {
-      const x = innerPad + ((p.lon - minLon) / (maxLon - minLon)) * plotWidth;
-      const y = innerPad + ((maxLat - p.lat) / (maxLat - minLat)) * plotHeight;
-      return {
-        ...p,
-        x,
-        y,
-        labelDx: 10,
-        labelDy: idx % 2 === 0 ? -10 : 14,
-      };
-    });
-  }, [countryMapPoints]);
-
   useEffect(() => {
     const loadCatalog = async () => {
       const response = await fetch(`${apiBase}/v1/issues`);
@@ -690,6 +656,41 @@ export default function HomePage() {
             <button type="button" className="chip">Contact sales</button>
           </div>
         </div>
+      </section>
+
+      <section className="panel compact">
+        <h2>Method Weights (Dynamic Fusion)</h2>
+        <p className="muted mini">
+          Derived automatically from model state + analyst-panel consensus. Not user-selectable.
+        </p>
+        <div className="weight-pills">
+          <span className="chip selected">Driving forces {Math.round((snapshot?.scenario_methods.consensus.weights.driving_forces ?? 0) * 100)}%</span>
+          <span className="chip">Game theory {Math.round((snapshot?.scenario_methods.consensus.weights.game_theory ?? 0) * 100)}%</span>
+          <span className="chip">Chessboard {Math.round((snapshot?.scenario_methods.consensus.weights.chessboard ?? 0) * 100)}%</span>
+          <span className="chip">Disagreement {(snapshot?.scenario_methods.consensus.disagreement_index ?? 0).toFixed(3)}</span>
+        </div>
+        <div className="weight-bars">
+          <div className="weight-row">
+            <span>Driving forces</span>
+            <div className="weight-track">
+              <div className="weight-fill" style={{ width: `${Math.round((snapshot?.scenario_methods.consensus.weights.driving_forces ?? 0) * 100)}%` }} />
+            </div>
+          </div>
+          <div className="weight-row">
+            <span>Game theory</span>
+            <div className="weight-track">
+              <div className="weight-fill" style={{ width: `${Math.round((snapshot?.scenario_methods.consensus.weights.game_theory ?? 0) * 100)}%` }} />
+            </div>
+          </div>
+          <div className="weight-row">
+            <span>Chessboard</span>
+            <div className="weight-track">
+              <div className="weight-fill" style={{ width: `${Math.round((snapshot?.scenario_methods.consensus.weights.chessboard ?? 0) * 100)}%` }} />
+            </div>
+          </div>
+        </div>
+        <p className="muted mini">{snapshot?.scenario_methods.consensus.derived_from ?? "Resolver metadata loading..."}</p>
+        <p className="muted mini">{snapshot?.scenario_methods.consensus.analyst_panel_consensus ?? ""}</p>
       </section>
 
       <section className="grid-3">
@@ -882,26 +883,8 @@ export default function HomePage() {
         <article className="panel">
           <h2>{lensType === "country" ? "Country Focus Impact" : "Country Impact"}</h2>
           <div className="country-map-wrap">
-            <svg viewBox="0 0 880 360" className="country-map" role="img" aria-label="Country impact map">
-              <rect x="0" y="0" width="880" height="360" rx="10" fill="#0f1723" />
-              <g opacity="0.18" stroke="#9fb3cc" strokeWidth="1">
-                <line x1="0" y1="90" x2="880" y2="90" />
-                <line x1="0" y1="180" x2="880" y2="180" />
-                <line x1="0" y1="270" x2="880" y2="270" />
-                <line x1="220" y1="0" x2="220" y2="360" />
-                <line x1="440" y1="0" x2="440" y2="360" />
-                <line x1="660" y1="0" x2="660" y2="360" />
-              </g>
-              {mapPlotPoints.map((point) => (
-                <g key={`map-${point.label}`} transform={`translate(${point.x}, ${point.y})`}>
-                  <circle r={point.directness === "direct" ? 8 : 6} fill={severityColor(point.severity)} stroke="#e2e8f0" strokeWidth="1" />
-                  <text x={point.labelDx} y={point.labelDy} fill="#e2e8f0" fontSize="12">
-                    {point.label}
-                  </text>
-                </g>
-              ))}
-            </svg>
-            <p className="muted mini">Auto-focused view. Color = severity, larger marker = direct exposure.</p>
+            <ImpactMap points={countryMapPoints} lensType={lensType} lensFocus={activeLensFocus} />
+            <p className="muted mini">OpenStreetMap overlay. Color = severity, larger marker = direct exposure.</p>
           </div>
           <ul className="map-legend-list">
             {[...visibleCountries]

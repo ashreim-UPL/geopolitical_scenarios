@@ -1,14 +1,26 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
+from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
 
 import httpx
 
+_REPO_ROOT = Path(__file__).resolve().parents[5]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.append(str(_REPO_ROOT))
+
+from packages.scenarios.weight_resolver import (  # noqa: E402
+    ForceType,
+    PhaseVelocity,
+    SystemState,
+    resolve_method_weights,
+)
 
 ISSUE_CATALOG: dict[str, str] = {
     "red-sea-shipping": "Red Sea shipping",
@@ -349,15 +361,98 @@ def _chessboard_method(
     return _map_to_ranked_rows(scores), last_moves[-len(ACTORS):]
 
 
+def _infer_system_state(issue_pressure: float, force_totals: dict[str, float]) -> SystemState:
+    military_pressure = force_totals.get("military", 0.0) + force_totals.get("cyber", 0.0)
+    diplomatic_pressure = force_totals.get("diplomatic", 0.0)
+    if issue_pressure >= 0.8 and military_pressure >= 0.36:
+        return SystemState.PRE_WAR_TRANSITION
+    if issue_pressure >= 0.88:
+        return SystemState.REGIONAL_WAR
+    if military_pressure >= 0.42:
+        return SystemState.HYBRID_ESCALATION
+    if force_totals.get("economic", 0.0) >= 0.32:
+        return SystemState.MARITIME_PRESSURE
+    if diplomatic_pressure >= 0.3 and issue_pressure <= 0.6:
+        return SystemState.NEGOTIATED_STABILIZATION
+    return SystemState.CONTROLLED_INSTABILITY
+
+
+def _infer_phase_velocity(trend: str, issue_pressure: float) -> PhaseVelocity:
+    if trend == "rising" or issue_pressure >= 0.78:
+        return PhaseVelocity.ACCELERATING
+    if trend == "cooling" and issue_pressure <= 0.52:
+        return PhaseVelocity.DECELERATING
+    return PhaseVelocity.STABLE
+
+
+def _infer_dominant_force_type(force_totals: dict[str, float]) -> ForceType:
+    military_block = force_totals.get("military", 0.0) + force_totals.get("cyber", 0.0)
+    economic = force_totals.get("economic", 0.0)
+    narrative_block = force_totals.get("narrative", 0.0) + force_totals.get("ideological", 0.0)
+    if military_block >= max(economic, narrative_block):
+        return ForceType.MILITARY
+    if economic >= max(military_block, narrative_block):
+        return ForceType.ECONOMIC
+    if narrative_block >= max(military_block, economic):
+        return ForceType.NARRATIVE
+    return ForceType.BALANCED
+
+
+def _analyst_panel_weight_recommendation(force_totals: dict[str, float], issue_pressure: float) -> dict[str, float]:
+    diplomatic = force_totals.get("diplomatic", 0.0)
+    narrative = force_totals.get("narrative", 0.0)
+    ideological = force_totals.get("ideological", 0.0)
+    military = force_totals.get("military", 0.0)
+    cyber = force_totals.get("cyber", 0.0)
+    economic = force_totals.get("economic", 0.0)
+
+    panel_profiles = [
+        (diplomatic + narrative + 0.2, {"driving_forces": 0.25, "game_theory": 0.5, "chessboard": 0.25}),  # Political analyst
+        (economic + 0.2, {"driving_forces": 0.6, "game_theory": 0.25, "chessboard": 0.15}),  # Economist
+        (military + cyber + 0.2, {"driving_forces": 0.2, "game_theory": 0.25, "chessboard": 0.55}),  # Military planner
+        ((1 - issue_pressure) + 0.15, {"driving_forces": 0.55, "game_theory": 0.3, "chessboard": 0.15}),  # Academic
+        (ideological + narrative + 0.2, {"driving_forces": 0.3, "game_theory": 0.5, "chessboard": 0.2}),  # Ideology analyst
+    ]
+
+    total_vote = sum(weight for weight, _ in panel_profiles) or 1.0
+    blended = {"driving_forces": 0.0, "game_theory": 0.0, "chessboard": 0.0}
+    for vote_weight, profile in panel_profiles:
+        scale = vote_weight / total_vote
+        for key in blended:
+            blended[key] += profile[key] * scale
+    return blended
+
+
 def _consensus_scenarios(
     driving_rows: list[dict[str, Any]],
     game_rows: list[dict[str, Any]],
     chess_rows: list[dict[str, Any]],
+    *,
+    force_totals: dict[str, float],
+    issue_pressure: float,
+    trend: str,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     driving_map = _list_to_map(driving_rows)
     game_map = _list_to_map(game_rows)
     chess_map = _list_to_map(chess_rows)
-    weights = {"driving_forces": 0.4, "game_theory": 0.3, "chessboard": 0.3}
+    system_state = _infer_system_state(issue_pressure, force_totals)
+    phase_velocity = _infer_phase_velocity(trend, issue_pressure)
+    dominant_force_type = _infer_dominant_force_type(force_totals)
+    base_weights = resolve_method_weights(
+        system_state=system_state,
+        phase_velocity=phase_velocity,
+        dominant_force_type=dominant_force_type,
+    )
+    analyst_weights = _analyst_panel_weight_recommendation(force_totals, issue_pressure)
+    blend_model = 0.65
+    blend_panel = 0.35
+    weights = {
+        "driving_forces": round((base_weights.driving_forces * blend_model) + (analyst_weights["driving_forces"] * blend_panel), 4),
+        "game_theory": round((base_weights.game_theory * blend_model) + (analyst_weights["game_theory"] * blend_panel), 4),
+        "chessboard": round((base_weights.chessboard * blend_model) + (analyst_weights["chessboard"] * blend_panel), 4),
+    }
+    weight_total = weights["driving_forces"] + weights["game_theory"] + weights["chessboard"]
+    weights = {key: round(value / (weight_total or 1.0), 4) for key, value in weights.items()}
 
     consensus_scores: dict[str, float] = {}
     disagreement = 0.0
@@ -368,7 +463,13 @@ def _consensus_scenarios(
         consensus_scores[scenario] = (d * weights["driving_forces"]) + (g * weights["game_theory"]) + (c * weights["chessboard"])
         disagreement += max(d, g, c) - min(d, g, c)
     disagreement /= len(SCENARIOS)
-    meta = {"weights": weights, "disagreement_index": round(disagreement, 4)}
+    meta = {
+        "weights": weights,
+        "disagreement_index": round(disagreement, 4),
+        "derived_from": base_weights.derived_from,
+        "analyst_panel_consensus": "Five-lens panel recommendation blended with model state resolver (65/35).",
+        "analyst_override": False,
+    }
     return _map_to_ranked_rows(consensus_scores), meta
 
 
@@ -1055,14 +1156,21 @@ async def build_dashboard_snapshot(
     driving_rows = _driving_forces_method(force_scores)
     game_rows = _game_theory_method(force_scores, issue_pressure)
     chess_rows, actor_moves = _chessboard_method(force_scores, issue_pressure, iterations=4)
-    scenarios, scenario_meta = _consensus_scenarios(driving_rows, game_rows, chess_rows)
+    trend = _trend_label(signals)
+    scenarios, scenario_meta = _consensus_scenarios(
+        driving_rows,
+        game_rows,
+        chess_rows,
+        force_totals=force_scores,
+        issue_pressure=issue_pressure,
+        trend=trend,
+    )
     top_state = "Controlled instability"
     if scenarios and scenarios[0]["name"] in {"Negotiated stabilization", "Managed confrontation"}:
         top_state = "Managed tension"
     if scenarios and scenarios[0]["name"] == "Regional war escalation":
         top_state = "Pre-war transition"
 
-    trend = _trend_label(signals)
     sorted_forces = sorted(force_scores.items(), key=lambda row: row[1], reverse=True)
     top_forces = [{"name": name, "score": score} for name, score in sorted_forces]
     conflict_escalation = _calculate_conflict_escalation(scenarios, force_scores, issue_pressure)
