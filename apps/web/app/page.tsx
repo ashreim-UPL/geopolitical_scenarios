@@ -707,27 +707,6 @@ export default function HomePage() {
         </div>
       </section>
 
-      <section className="panel compact monetization-panel">
-        <h2>Premium Intelligence Modules</h2>
-        <div className="monetization-grid">
-          <div className="impact-card">
-            <p><strong>Analyst Pro</strong></p>
-            <p className="muted mini">Saved watchlists, custom alerts, and export packs.</p>
-            <button type="button" className="chip selected">Start trial</button>
-          </div>
-          <div className="impact-card">
-            <p><strong>Team Ops</strong></p>
-            <p className="muted mini">Shared boards, consensus workflow, and approvals.</p>
-            <button type="button" className="chip">Request demo</button>
-          </div>
-          <div className="impact-card">
-            <p><strong>API Access</strong></p>
-            <p className="muted mini">Programmatic scenarios, risk feeds, and webhooks.</p>
-            <button type="button" className="chip">Contact sales</button>
-          </div>
-        </div>
-      </section>
-
       <section className="panel compact">
         <h2>Method Weights (Dynamic Fusion)</h2>
         <p className="muted mini">

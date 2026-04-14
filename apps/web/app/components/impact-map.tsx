@@ -70,16 +70,24 @@ export default function ImpactMap({ points, lensType, lensFocus }: ImpactMapProp
       return;
     }
 
+    const container = containerRef.current as HTMLDivElement & { _leaflet_id?: number };
+
     if (mapRef.current) {
       mapRef.current.remove();
       mapRef.current = null;
+    }
+
+    // Guard against dev hot-reload/strict-mode remounts leaving stale Leaflet metadata on the same DOM node.
+    if (container._leaflet_id) {
+      container._leaflet_id = undefined;
+      container.innerHTML = "";
     }
 
     const regionPreset = REGION_VIEW[lensFocus];
     const defaultCenter: [number, number] = [20, 10];
     const defaultZoom = lensType === "global" ? 2 : 3;
 
-    const map = L.map(containerRef.current, {
+    const map = L.map(container, {
       center: regionPreset?.center ?? defaultCenter,
       zoom: regionPreset?.zoom ?? defaultZoom,
       zoomControl: true,
@@ -117,11 +125,17 @@ export default function ImpactMap({ points, lensType, lensFocus }: ImpactMapProp
 
     mapRef.current = map;
     return () => {
-      map.remove();
-      mapRef.current = null;
+      try {
+        map.remove();
+      } finally {
+        mapRef.current = null;
+        container.innerHTML = "";
+        if (container._leaflet_id) {
+          container._leaflet_id = undefined;
+        }
+      }
     };
   }, [points, lensType, lensFocus]);
 
   return <div ref={containerRef} className="country-map" />;
 }
-
