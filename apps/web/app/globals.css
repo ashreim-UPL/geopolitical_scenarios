@@ -152,6 +152,41 @@ body {
   font-size: 28px;
 }
 
+.gauge-card.secondary .gauge-percent {
+  font-size: 22px;
+}
+
+.gauge-trend {
+  margin-top: 0.2rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+}
+
+.sparkline {
+  position: relative;
+  display: block;
+  width: 70%;
+  height: 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+}
+
+.sparkline::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: linear-gradient(90deg, rgba(148,163,184,0.2), rgba(148,163,184,0.9));
+  clip-path: polygon(0 80%, 16% 40%, 35% 70%, 55% 35%, 72% 62%, 100% 20%);
+}
+
+.gauge-trend.trend-up { color: #f59e0b; }
+.gauge-trend.trend-down { color: #ef4444; }
+.gauge-trend.trend-flat { color: #94a3b8; }
+
 .mini {
   font-size: 0.78rem;
 }

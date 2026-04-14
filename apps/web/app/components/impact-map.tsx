@@ -69,6 +69,9 @@ function boundsFromPoints(points: MapPoint[]): L.LatLngBounds | null {
 export default function ImpactMap({ points, lensType, lensFocus }: ImpactMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
+  const ringsLayerRef = useRef<L.LayerGroup | null>(null);
+  const markersLayerRef = useRef<L.LayerGroup | null>(null);
+  const tileLayerRef = useRef<L.TileLayer | null>(null);
 
   useEffect(() => {
     if (!containerRef.current) {
@@ -77,36 +80,67 @@ export default function ImpactMap({ points, lensType, lensFocus }: ImpactMapProp
 
     const container = containerRef.current as HTMLDivElement & { _leaflet_id?: number };
 
-    if (mapRef.current) {
-      mapRef.current.remove();
-      mapRef.current = null;
-    }
-
-    // Guard against dev hot-reload/strict-mode remounts leaving stale Leaflet metadata on the same DOM node.
     if (container._leaflet_id) {
       container._leaflet_id = undefined;
       container.innerHTML = "";
     }
 
-    const regionPreset = REGION_VIEW[lensFocus];
-    const defaultCenter: [number, number] = [20, 10];
-    const defaultZoom = lensType === "global" ? 2 : 3;
-
     const map = L.map(container, {
-      center: regionPreset?.center ?? defaultCenter,
-      zoom: regionPreset?.zoom ?? defaultZoom,
+      center: [20, 10],
+      zoom: 2,
       zoomControl: true,
       scrollWheelZoom: false,
       worldCopyJump: true,
+      zoomAnimation: false,
+      fadeAnimation: false,
+      markerZoomAnimation: false,
+      inertia: false,
     });
 
     map.attributionControl.setPrefix("");
-    L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+    tileLayerRef.current = L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
       subdomains: "abcd",
       maxZoom: 19,
       attribution:
         '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-    }).addTo(map);
+    });
+    tileLayerRef.current.addTo(map);
+
+    ringsLayerRef.current = L.layerGroup().addTo(map);
+    markersLayerRef.current = L.layerGroup().addTo(map);
+
+    mapRef.current = map;
+    return () => {
+      try {
+        ringsLayerRef.current?.clearLayers();
+        markersLayerRef.current?.clearLayers();
+        ringsLayerRef.current?.remove();
+        markersLayerRef.current?.remove();
+        tileLayerRef.current?.remove();
+        map.remove();
+      } finally {
+        mapRef.current = null;
+        ringsLayerRef.current = null;
+        markersLayerRef.current = null;
+        tileLayerRef.current = null;
+        container.innerHTML = "";
+        if (container._leaflet_id) {
+          container._leaflet_id = undefined;
+        }
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    const ringsLayer = ringsLayerRef.current;
+    const markersLayer = markersLayerRef.current;
+    if (!map || !ringsLayer || !markersLayer) {
+      return;
+    }
+
+    ringsLayer.clearLayers();
+    markersLayer.clearLayers();
 
     points.forEach((point) => {
       const color = severityColor(point.severity);
@@ -121,7 +155,7 @@ export default function ImpactMap({ points, lensType, lensFocus }: ImpactMapProp
         weight: 1.5,
         radius: ringRadiusMeters,
         opacity: 0.85,
-      }).addTo(map);
+      }).addTo(ringsLayer);
 
       const marker = L.circleMarker([point.lat, point.lon], {
         radius: point.directness === "direct" ? 6 : 5,
@@ -129,7 +163,7 @@ export default function ImpactMap({ points, lensType, lensFocus }: ImpactMapProp
         weight: 2,
         fillColor: color,
         fillOpacity: 1,
-      }).addTo(map);
+      }).addTo(markersLayer);
 
       const status =
         point.severity >= 0.78
@@ -148,25 +182,15 @@ export default function ImpactMap({ points, lensType, lensFocus }: ImpactMapProp
       );
     });
 
+    const regionPreset = REGION_VIEW[lensFocus];
+    const defaultCenter: [number, number] = [20, 10];
+    const defaultZoom = lensType === "global" ? 2 : 3;
     const bounds = boundsFromPoints(points);
     if (bounds) {
       map.fitBounds(bounds, { padding: [16, 16], maxZoom: lensType === "country" ? 6 : 5 });
-    } else if (lensType === "global") {
-      map.setView([18, 5], 2);
+    } else {
+      map.setView(regionPreset?.center ?? defaultCenter, regionPreset?.zoom ?? defaultZoom);
     }
-
-    mapRef.current = map;
-    return () => {
-      try {
-        map.remove();
-      } finally {
-        mapRef.current = null;
-        container.innerHTML = "";
-        if (container._leaflet_id) {
-          container._leaflet_id = undefined;
-        }
-      }
-    };
   }, [points, lensType, lensFocus]);
 
   return (

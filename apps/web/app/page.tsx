@@ -337,19 +337,21 @@ function GaugeDial({
   percent,
   band,
   emphasis = "secondary",
+  trend = "flat",
 }: {
   title: string;
   score: number;
   percent: number;
   band: string;
   emphasis?: "primary" | "secondary";
+  trend?: "up" | "down" | "flat";
 }) {
   const clamped = Math.max(0, Math.min(1, score));
-  const startAngle = -140;
-  const endAngle = 140;
-  const angle = startAngle + (endAngle - startAngle) * clamped;
-  const needle = polarToCartesian(88, 88, 56, angle);
-  const glow = severityColor(clamped);
+  const startAngle = -138;
+  const endAngle = 138;
+  const valueAngle = startAngle + (endAngle - startAngle) * clamped;
+  const trendArrow = trend === "up" ? "↑" : trend === "down" ? "↓" : "→";
+  const trendClass = trend === "up" ? "trend-up" : trend === "down" ? "trend-down" : "trend-flat";
 
   return (
     <article className={`gauge-card ${emphasis}`}>
@@ -362,38 +364,26 @@ function GaugeDial({
             <stop offset="70%" stopColor="#f97316" />
             <stop offset="100%" stopColor="#ef4444" />
           </linearGradient>
-          <filter id={`${title.replace(/\s+/g, "-")}-blur`}>
-            <feGaussianBlur stdDeviation="2" />
-          </filter>
         </defs>
-        <path d={arcPath(88, 88, 68, startAngle, endAngle)} stroke="#1f2937" strokeWidth="12" fill="none" />
+        <path d={arcPath(88, 88, 68, startAngle, endAngle)} stroke="rgba(148,163,184,0.2)" strokeWidth="10" fill="none" />
         <path
-          d={arcPath(88, 88, 68, startAngle, endAngle)}
+          d={arcPath(88, 88, 68, startAngle, valueAngle)}
           stroke={`url(#${title.replace(/\s+/g, "-")}-grad)`}
-          strokeWidth="12"
+          strokeWidth="10"
           fill="none"
           strokeLinecap="round"
         />
-        <line x1="88" y1="88" x2={needle.x} y2={needle.y} stroke={glow} strokeWidth="4" strokeLinecap="round" />
-        <line
-          x1="88"
-          y1="88"
-          x2={needle.x}
-          y2={needle.y}
-          stroke={glow}
-          strokeWidth="7"
-          strokeLinecap="round"
-          opacity="0.26"
-          filter={`url(#${title.replace(/\s+/g, "-")}-blur)`}
-        />
-        <circle cx="88" cy="88" r="5.5" fill="#e2e8f0" />
         <text x="88" y="74" textAnchor="middle" className="gauge-percent">{percent}</text>
         <text x="88" y="88" textAnchor="middle" className="gauge-unit">/100</text>
-        <text x="88" y="102" textAnchor="middle" className="gauge-band">{band}</text>
+        <text x="88" y="101" textAnchor="middle" className="gauge-band">{band}</text>
         <text x="16" y="120" className="gauge-scale">0</text>
         <text x="84" y="120" className="gauge-scale">50</text>
         <text x="154" y="120" className="gauge-scale">100</text>
       </svg>
+      <div className={`gauge-trend ${trendClass}`}>
+        <span className="sparkline" />
+        <span>{trendArrow}</span>
+      </div>
     </article>
   );
 }
@@ -634,6 +624,7 @@ export default function HomePage() {
               percent={snapshot?.overall_criticality.percent ?? Math.round(overallCriticality * 100)}
               band={snapshot?.overall_criticality.band ?? severityBandFromScore(overallCriticality)}
               emphasis="primary"
+              trend={snapshot?.trend === "rising" ? "up" : snapshot?.trend === "cooling" ? "down" : "flat"}
             />
             <GaugeDial
               title="Conflict Escalation"
@@ -641,6 +632,7 @@ export default function HomePage() {
               percent={snapshot?.conflict_escalation.percent ?? Math.round((snapshot?.conflict_escalation.score ?? 0) * 100)}
               band={snapshot?.conflict_escalation.band ?? "Unknown"}
               emphasis="secondary"
+              trend={(snapshot?.conflict_escalation.score ?? 0) >= 0.5 ? "up" : "flat"}
             />
           </div>
           <details>
