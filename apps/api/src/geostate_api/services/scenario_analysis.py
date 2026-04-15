@@ -9,6 +9,7 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
+from urllib.parse import quote
 
 import httpx
 
@@ -40,6 +41,21 @@ ISSUE_QUERIES: dict[str, str] = {
     "taiwan-strait": "Taiwan Strait military exercise incursion",
     "russia-ukraine-war": "Russia Ukraine missile strike sanctions frontline",
     "iran-israel-dynamics": "Iran Israel strike proxy escalation diplomatic signaling",
+}
+
+BASE_GLOBAL_RSS_SOURCES: tuple[dict[str, str], ...] = (
+    {"name": "BBC World", "url": "https://feeds.bbci.co.uk/news/world/rss.xml"},
+    {"name": "Guardian World", "url": "https://www.theguardian.com/world/rss"},
+    {"name": "Al Jazeera", "url": "https://www.aljazeera.com/xml/rss/all.xml"},
+)
+
+ISSUE_FILTER_HINTS: dict[str, tuple[str, ...]] = {
+    "red-sea-shipping": ("red sea", "bab el-mandeb", "suez", "hormuz", "shipping", "container"),
+    "gulf-energy-security": ("gulf", "hormuz", "oil", "lng", "refinery", "energy"),
+    "us-china-technology": ("us", "china", "semiconductor", "chip", "export control", "technology"),
+    "taiwan-strait": ("taiwan", "strait", "pla", "incursion", "drill", "east china sea"),
+    "russia-ukraine-war": ("russia", "ukraine", "missile", "frontline", "black sea"),
+    "iran-israel-dynamics": ("iran", "israel", "proxy", "tehran", "hezbollah", "levan"),
 }
 
 MAJOR_CONFLICT_CATALOG: dict[str, dict[str, Any]] = {
@@ -98,6 +114,12 @@ ALTERNATIVE_SOURCE_FEEDS: list[dict[str, str]] = [
     },
 ]
 
+ALTERNATIVE_RSS_SOURCES: tuple[dict[str, str], ...] = (
+    {"name": "EUvsDisinfo", "url": "https://euvsdisinfo.eu/feed/"},
+    {"name": "HKS Misinformation Review", "url": "https://misinforeview.hks.harvard.edu/feed/"},
+    {"name": "Sky News Strange", "url": "https://feeds.skynews.com/feeds/rss/strange.xml"},
+)
+
 ALTERNATIVE_THEME_CATALOG: list[dict[str, Any]] = [
     {
         "name": "Prophetic-cycle narratives (Nostradamus-style)",
@@ -120,10 +142,15 @@ ALTERNATIVE_THEME_CATALOG: list[dict[str, Any]] = [
 ]
 
 _SCENARIO_IMAGE_CACHE: dict[str, tuple[datetime, dict[str, Any]]] = {}
-_SCENARIO_IMAGE_CACHE_TTL = timedelta(minutes=25)
+_SCENARIO_IMAGE_CACHE_TTL = timedelta(minutes=max(15, int(os.getenv("SCENARIO_IMAGE_CACHE_TTL_MINUTES", "120"))))
 _SNAPSHOT_CACHE: dict[str, dict[str, Any]] = {}
 _SNAPSHOT_HISTORY: dict[str, list[dict[str, Any]]] = {}
 _SNAPSHOT_REFRESH_TASKS: dict[str, asyncio.Task[Any]] = {}
+_SIGNAL_CACHE: dict[str, tuple[datetime, list[SignalItem]]] = {}
+_SIGNAL_REFRESH_TASKS: dict[str, asyncio.Task[Any]] = {}
+_SEMANTIC_PARSE_CACHE: dict[str, tuple[datetime, dict[str, Any]]] = {}
+_SEMANTIC_PARSE_CACHE_TTL = timedelta(minutes=max(5, int(os.getenv("SEMANTIC_PARSE_CACHE_TTL_MINUTES", "30"))))
+_SOURCE_HEALTH: dict[str, dict[str, str | None]] = {}
 
 
 SCENARIOS: tuple[str, ...] = (
@@ -201,8 +228,8 @@ ISSUE_ESCALATION_PRESSURE: dict[str, float] = {
 
 REGION_COUNTRY_EXPOSURE: dict[str, tuple[tuple[str, str, float], ...]] = {
     "Levant": (("Israel", "direct", 1.0), ("Lebanon", "direct", 0.95), ("Jordan", "indirect", 0.72), ("Egypt", "indirect", 0.74)),
-    "Gulf region": (("Iran", "direct", 1.0), ("Saudi Arabia", "direct", 0.9), ("UAE", "direct", 0.86), ("Qatar", "indirect", 0.76), ("Bahrain", "indirect", 0.72), ("Kuwait", "indirect", 0.74), ("Oman", "indirect", 0.7)),
-    "MENA": (("Turkey", "indirect", 0.73), ("Iraq", "direct", 0.88), ("Syria", "direct", 0.9)),
+    "Gulf region": (("Iran", "direct", 1.0), ("Saudi Arabia", "direct", 0.9), ("UAE", "direct", 0.86), ("Qatar", "indirect", 0.76), ("Bahrain", "indirect", 0.72), ("Kuwait", "indirect", 0.74), ("Oman", "indirect", 0.7), ("Yemen", "direct", 0.92)),
+    "MENA": (("Turkey", "indirect", 0.73), ("Iraq", "direct", 0.88), ("Syria", "direct", 0.9), ("Yemen", "direct", 0.9)),
     "Europe": (("Germany", "indirect", 0.68), ("France", "indirect", 0.66), ("Italy", "indirect", 0.67), ("United Kingdom", "indirect", 0.69)),
     "EU energy consumers": (("Poland", "indirect", 0.65), ("Netherlands", "indirect", 0.62)),
     "Eastern Europe": (("Ukraine", "direct", 1.0), ("Russia", "direct", 0.98), ("Romania", "indirect", 0.71)),
@@ -248,11 +275,97 @@ class SignalItem:
     published_utc: datetime | None
     issue: str
     summary: str = ""
+    ai_summary: str = ""
+    ai_keywords: tuple[str, ...] = ()
+    ai_force_scores: dict[str, float] | None = None
+    ai_relevance_score: float | None = None
+    ai_assigned_issue: str | None = None
+    ai_include_in_scope: bool = True
 
 
 def _to_google_news_rss_url(query: str) -> str:
     encoded = query.replace(" ", "+")
     return f"https://news.google.com/rss/search?q={encoded}&hl=en-US&gl=US&ceid=US:en"
+
+
+def _global_rss_sources() -> list[dict[str, str]]:
+    rows = list(BASE_GLOBAL_RSS_SOURCES)
+    raw = os.getenv("ADDITIONAL_RSS_FEEDS", "").strip()
+    if not raw:
+        return rows
+    for chunk in raw.split(";"):
+        item = chunk.strip()
+        if not item:
+            continue
+        if "|" not in item:
+            continue
+        name, url = item.split("|", 1)
+        name = name.strip()
+        url = url.strip()
+        if not name or not url:
+            continue
+        rows.append({"name": name, "url": url})
+    return rows
+
+
+def _alternative_rss_sources() -> list[dict[str, str]]:
+    rows = list(ALTERNATIVE_RSS_SOURCES)
+    raw = os.getenv("ALTERNATIVE_RSS_FEEDS", "").strip()
+    if not raw:
+        return rows
+    for chunk in raw.split(";"):
+        item = chunk.strip()
+        if not item or "|" not in item:
+            continue
+        name, url = item.split("|", 1)
+        name = name.strip()
+        url = url.strip()
+        if not name or not url:
+            continue
+        rows.append({"name": name, "url": url})
+    return rows
+
+
+def _default_selected_issues() -> list[str]:
+    configured = os.getenv("DEFAULT_ISSUE_BUCKET", "").strip()
+    if configured in ISSUE_CATALOG:
+        return [configured]
+    top_issue = max(ISSUE_ESCALATION_PRESSURE.items(), key=lambda row: row[1])[0]
+    return [top_issue]
+
+
+def _mark_source_success(source_name: str) -> None:
+    row = _SOURCE_HEALTH.setdefault(
+        source_name,
+        {"last_success_utc": None, "last_error_utc": None, "last_error": None},
+    )
+    row["last_success_utc"] = datetime.now(UTC).isoformat()
+    row["last_error"] = None
+
+
+def _mark_source_error(source_name: str, error: Exception | str) -> None:
+    row = _SOURCE_HEALTH.setdefault(
+        source_name,
+        {"last_success_utc": None, "last_error_utc": None, "last_error": None},
+    )
+    row["last_error_utc"] = datetime.now(UTC).isoformat()
+    row["last_error"] = str(error)[:240]
+
+
+def source_health_rows() -> list[dict[str, str | None]]:
+    rows = []
+    for source_name, row in _SOURCE_HEALTH.items():
+        rows.append(
+            {
+                "source": source_name,
+                "last_success_utc": row.get("last_success_utc"),
+                "last_error_utc": row.get("last_error_utc"),
+                "last_error": row.get("last_error"),
+                "status": "degraded" if row.get("last_error") else "ok",
+            }
+        )
+    rows.sort(key=lambda item: item["source"] or "")
+    return rows
 
 
 def _safe_parse_datetime(raw_value: str) -> datetime | None:
@@ -280,13 +393,209 @@ def _score_forces(text: str) -> dict[str, float]:
     return scores
 
 
+def _sanitize_force_scores(raw: dict[str, Any] | None) -> dict[str, float]:
+    clean: dict[str, float] = {}
+    if raw:
+        for force in FORCE_KEYWORDS:
+            value = raw.get(force, 0.0)
+            try:
+                clean[force] = round(max(0.0, min(1.0, float(value))), 3)
+            except (TypeError, ValueError):
+                clean[force] = 0.0
+    else:
+        clean = {force: 0.0 for force in FORCE_KEYWORDS}
+
+    mass = sum(clean.values())
+    if mass <= 0:
+        return FORCE_PRIORS.copy()
+    normalized = {force: round(value / mass, 4) for force, value in clean.items()}
+    drift = round(1.0 - sum(normalized.values()), 4)
+    if drift != 0:
+        top_force = max(normalized, key=normalized.get)
+        normalized[top_force] = round(normalized[top_force] + drift, 4)
+    return normalized
+
+
+def _extract_json_snippet(raw: str) -> str:
+    text = raw.strip()
+    if text.startswith("{") and text.endswith("}"):
+        return text
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        return text[start : end + 1]
+    return text
+
+
+async def _semantic_enrich_signals(
+    items: list[SignalItem],
+    *,
+    provider_info: dict[str, Any],
+    selected_issues: list[str],
+) -> tuple[list[SignalItem], dict[str, Any]]:
+    if not items:
+        return items, {"summary": "No signals available.", "keywords": []}
+    if not provider_info.get("llm_enabled"):
+        return items, {"summary": "LLM disabled; deterministic parsing active.", "keywords": []}
+
+    compact_rows = []
+    for idx, item in enumerate(items[:40]):
+        compact_rows.append(
+            {
+                "idx": idx,
+                "title": item.title[:280],
+                "source": item.source[:120],
+                "issue": item.issue,
+                "summary": item.summary[:400],
+            }
+        )
+    cache_basis = "|".join(
+        [str(provider_info.get("provider", "deterministic"))]
+        + [f"{row['issue']}::{row['title']}" for row in compact_rows]
+    )
+    cache_key = str(hash(cache_basis))
+    now = datetime.now(UTC)
+    cached_parse = _SEMANTIC_PARSE_CACHE.get(cache_key)
+    if cached_parse and (now - cached_parse[0]) <= _SEMANTIC_PARSE_CACHE_TTL:
+        parsed = cached_parse[1]
+    else:
+        parsed = None
+
+    schema_hint = {
+        "signal_parsing": [
+            {
+                "idx": 0,
+                "brief": "One-sentence factual synthesis",
+                "keywords": ["shipping", "hormuz"],
+                "assigned_issue": "red-sea-shipping",
+                "relevance_score": 0.82,
+                "include_in_scope": True,
+                "forces": {force: 0.0 for force in FORCE_KEYWORDS},
+            }
+        ],
+        "compiled_summary": "120-180 words factual synthesis of key developments.",
+        "compiled_keywords": ["keyword1", "keyword2", "keyword3"],
+    }
+    base_prompt = (
+        "Parse geopolitical signals semantically. Return ONLY strict JSON.\n"
+        "Requirements:\n"
+        "1) For each signal idx, produce brief, keywords(3-6), and force scores across military/economic/diplomatic/narrative/ideological/cyber.\n"
+        "2) Force scores must be floats in [0,1] and reflect causal relevance, not keyword counts.\n"
+        "3) Assign each signal to one issue slug from selected_issue_slugs, add relevance_score [0,1], and include_in_scope boolean.\n"
+        "4) Produce compiled_summary (120-180 words, factual, no hallucinations) and compiled_keywords(6-12).\n"
+        "5) If evidence is ambiguous, lower force intensity and note uncertainty in brief."
+    )
+
+    issue_scope = selected_issues or _default_selected_issues()
+    payload_hint = f"selected_issue_slugs: {issue_scope}\nSchema: {schema_hint}\nSignals: {compact_rows}"
+    provider = str(provider_info.get("provider", "deterministic"))
+    openai_key = os.getenv("OPENAI_API_KEY")
+    gemini_key = os.getenv("GEMINI_API_KEY")
+
+    parsed_result: dict[str, Any] | None = parsed
+
+    if parsed_result is None and provider in {"openai", "deterministic", "nano"} and openai_key:
+        model = os.getenv("OPENAI_TEXT_MODEL", "gpt-4o-mini")
+        try:
+            async with httpx.AsyncClient(timeout=80) as client:
+                response = await client.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {openai_key}", "Content-Type": "application/json"},
+                    json={
+                        "model": model,
+                        "temperature": 0.2,
+                        "response_format": {"type": "json_object"},
+                        "messages": [
+                            {"role": "system", "content": "You are a geopolitical intelligence parser. Output strict JSON only."},
+                            {"role": "user", "content": f"{base_prompt}\n\n{payload_hint}"},
+                        ],
+                    },
+                )
+                response.raise_for_status()
+                content = (((response.json().get("choices") or [{}])[0]).get("message") or {}).get("content", "{}")
+                parsed_result = _safe_json_load(_extract_json_snippet(content))
+        except Exception:
+            parsed_result = None
+    elif parsed_result is None and provider == "gemini-cloud" and gemini_key:
+        model = os.getenv("GEMINI_TEXT_MODEL", "gemini-1.5-pro")
+        try:
+            async with httpx.AsyncClient(timeout=80) as client:
+                response = await client.post(
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={gemini_key}",
+                    headers={"Content-Type": "application/json"},
+                    json={
+                        "contents": [{"parts": [{"text": f"{base_prompt}\n\n{payload_hint}"}]}],
+                        "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"},
+                    },
+                )
+                response.raise_for_status()
+                candidates = response.json().get("candidates") or []
+                text = ""
+                if candidates:
+                    parts = (((candidates[0] or {}).get("content") or {}).get("parts") or [])
+                    if parts:
+                        text = str((parts[0] or {}).get("text", "{}"))
+                parsed_result = _safe_json_load(_extract_json_snippet(text))
+        except Exception:
+            parsed_result = None
+
+    if not isinstance(parsed_result, dict):
+        return items, {"summary": "Semantic parser unavailable; deterministic parsing active.", "keywords": []}
+    _SEMANTIC_PARSE_CACHE[cache_key] = (now, parsed_result)
+
+    by_idx: dict[int, dict[str, Any]] = {}
+    for row in parsed_result.get("signal_parsing", []) if isinstance(parsed_result.get("signal_parsing"), list) else []:
+        try:
+            idx = int(row.get("idx"))
+        except (TypeError, ValueError):
+            continue
+        by_idx[idx] = row
+
+    for idx, item in enumerate(items[:40]):
+        ai_row = by_idx.get(idx)
+        if not ai_row:
+            continue
+        item.ai_summary = str(ai_row.get("brief", "")).strip()[:400]
+        keywords = ai_row.get("keywords")
+        if isinstance(keywords, list):
+            item.ai_keywords = tuple(str(token).strip() for token in keywords if str(token).strip())[:12]
+        assigned_issue = str(ai_row.get("assigned_issue", item.issue)).strip()
+        if assigned_issue in ISSUE_CATALOG:
+            item.ai_assigned_issue = assigned_issue
+            item.issue = assigned_issue
+        try:
+            item.ai_relevance_score = max(0.0, min(1.0, float(ai_row.get("relevance_score", 0.0))))
+        except (TypeError, ValueError):
+            item.ai_relevance_score = 0.0
+        include_in_scope = bool(ai_row.get("include_in_scope", True))
+        if item.ai_relevance_score is not None and item.ai_relevance_score < 0.45:
+            include_in_scope = False
+        if issue_scope and item.issue not in issue_scope:
+            include_in_scope = False
+        item.ai_include_in_scope = include_in_scope
+        forces = ai_row.get("forces")
+        if isinstance(forces, dict):
+            item.ai_force_scores = _sanitize_force_scores(forces)
+
+    compiled_keywords = parsed_result.get("compiled_keywords")
+    if not isinstance(compiled_keywords, list):
+        compiled_keywords = []
+    return items, {
+        "summary": str(parsed_result.get("compiled_summary", "")).strip(),
+        "keywords": [str(token).strip() for token in compiled_keywords if str(token).strip()][:12],
+    }
+
+
 def _aggregate_forces(items: list[SignalItem]) -> dict[str, float]:
     totals = {force: 0.0 for force in FORCE_KEYWORDS}
     if not items:
         return FORCE_PRIORS.copy()
     for item in items:
-        text = f"{item.title} {item.summary}"
-        scores = _score_forces(text)
+        if item.ai_force_scores:
+            scores = item.ai_force_scores
+        else:
+            text = f"{item.title} {item.summary}"
+            scores = _score_forces(text)
         for force, value in scores.items():
             totals[force] += value
 
@@ -649,7 +958,7 @@ def _identify_major_conflicts(
     scenarios: list[dict[str, Any]],
     force_scores: dict[str, float],
 ) -> list[dict[str, Any]]:
-    selected = selected_issues or list(ISSUE_CATALOG.keys())[:3]
+    selected = selected_issues or _default_selected_issues()
     scenario_lookup = {row["name"]: row["probability"] for row in scenarios}
     base_pressure = (
         (scenario_lookup.get("Regional war escalation", 0.0) * 0.42)
@@ -1148,7 +1457,7 @@ def _build_impacts(
     scenario_lookup = {item["name"]: item["probability"] for item in scenarios}
     top_scenario = scenarios[0]["name"] if scenarios else "Unknown"
     top_prob = scenarios[0]["probability"] if scenarios else 0.0
-    selected = selected_issues or list(ISSUE_CATALOG.keys())[:3]
+    selected = selected_issues or _default_selected_issues()
     regions = sorted({name for slug in selected for name in ISSUE_REGION_MAPPING.get(slug, ())})
     country_focus_catalog: set[str] = set()
     for region in regions:
@@ -1243,7 +1552,7 @@ def _build_impacts(
             )
             focus_row["directness"] = "indirect"
             country_seed[focus_name] = focus_row
-    country_cards = sorted(country_seed.values(), key=lambda row: row["severity"], reverse=True)[:18]
+    country_cards = sorted(country_seed.values(), key=lambda row: row["severity"], reverse=True)
     sector_cards = [
         _impact_card(
             label="Energy",
@@ -1426,6 +1735,8 @@ def _normalize_items(raw_items: list[SignalItem], limit: int, *, provider_info: 
     dedupe: set[str] = set()
     rows: list[dict[str, Any]] = []
     for item in sorted_items[:limit]:
+        if item.ai_include_in_scope is False:
+            continue
         title_key = "".join(ch for ch in item.title.lower() if ch.isalnum() or ch.isspace()).strip()
         if not title_key or title_key in dedupe:
             continue
@@ -1441,10 +1752,16 @@ def _normalize_items(raw_items: list[SignalItem], limit: int, *, provider_info: 
                 "link": item.link,
                 "issue": item.issue,
                 "published_utc": None if item.published_utc is None else item.published_utc.isoformat(),
+                "summary": item.ai_summary or item.summary,
+                "keywords": list(item.ai_keywords),
                 "intelligence_metadata": _build_intelligence_metadata(
                     provider_info,
                     confidence_score=0.62,
-                    reasoning_tokens="Signal classified through deterministic keyword/force scoring.",
+                    reasoning_tokens=(
+                        "Signal semantically parsed by LLM for causal force mapping."
+                        if item.ai_force_scores
+                        else "Signal classified through deterministic keyword/force fallback."
+                    ),
                 ),
             }
         )
@@ -1454,7 +1771,7 @@ def _normalize_items(raw_items: list[SignalItem], limit: int, *, provider_info: 
 
 
 def _fallback_demo_signals(selected_issues: list[str]) -> list[SignalItem]:
-    issue_list = selected_issues or list(ISSUE_CATALOG.keys())[:3]
+    issue_list = selected_issues or _default_selected_issues()
     now = datetime.now(UTC)
     demo: list[SignalItem] = []
     for idx, issue in enumerate(issue_list):
@@ -1499,7 +1816,7 @@ def _build_alternative_signals(
     provider_info: dict[str, Any],
     generated_at: datetime,
 ) -> list[dict[str, Any]]:
-    issue_list = selected_issues or list(ISSUE_CATALOG.keys())[:3]
+    issue_list = selected_issues or _default_selected_issues()
     rows: list[dict[str, Any]] = []
     templates = (
         "{issue}: unverified claim of covert signaling pressure in active corridor.",
@@ -1527,6 +1844,63 @@ def _build_alternative_signals(
                 }
             )
     return rows[:20]
+
+
+async def fetch_alternative_signals(
+    selected_issues: list[str],
+    *,
+    use_live: bool,
+    provider_info: dict[str, Any],
+    generated_at: datetime,
+) -> list[dict[str, Any]]:
+    issue_list = selected_issues or _default_selected_issues()
+    if not use_live:
+        return _build_alternative_signals(issue_list, provider_info=provider_info, generated_at=generated_at)
+
+    rows: list[dict[str, Any]] = []
+    try:
+        async with httpx.AsyncClient(headers={"User-Agent": "geostate-engine/0.1"}) as client:
+            collected: list[SignalItem] = []
+            for issue in issue_list:
+                rss_rows = await _fetch_alternative_feed_signals(client, issue, limit=10)
+                feedly_rows = await _fetch_feedly_alt_signals(client, issue, limit=10)
+                collected.extend(rss_rows)
+                collected.extend(feedly_rows)
+            if collected:
+                collected, digest = await _semantic_enrich_signals(
+                    collected,
+                    provider_info=provider_info,
+                    selected_issues=issue_list,
+                )
+                for item in collected:
+                    if item.ai_include_in_scope is False:
+                        continue
+                    rows.append(
+                        {
+                            "title": item.title,
+                            "source": item.source,
+                            "link": item.link,
+                            "issue": item.issue,
+                            "published_utc": None if item.published_utc is None else item.published_utc.isoformat(),
+                            "summary": item.ai_summary or item.summary,
+                            "keywords": list(item.ai_keywords),
+                            "intelligence_metadata": _build_intelligence_metadata(
+                                provider_info,
+                                confidence_score=0.45,
+                                reasoning_tokens="Alternative-source semantic parser with low-confidence narrative scope.",
+                            ),
+                        }
+                    )
+                    if len(rows) >= 20:
+                        break
+                if rows:
+                    return rows
+                if digest.get("summary"):
+                    # keep digest effect through fallback path metadata
+                    pass
+    except Exception:
+        pass
+    return _build_alternative_signals(issue_list, provider_info=provider_info, generated_at=generated_at)
 
 
 def _normalize_force_distribution(force_scores: dict[str, float]) -> dict[str, float]:
@@ -1878,9 +2252,15 @@ async def _fetch_issue_signals(client: httpx.AsyncClient, issue_slug: str, limit
     if not query:
         return []
 
-    response = await client.get(_to_google_news_rss_url(query), timeout=20)
-    response.raise_for_status()
-    root = ElementTree.fromstring(response.text)
+    source_name = "Google News"
+    try:
+        response = await client.get(_to_google_news_rss_url(query), timeout=20)
+        response.raise_for_status()
+        root = ElementTree.fromstring(response.text)
+        _mark_source_success(source_name)
+    except Exception as exc:
+        _mark_source_error(source_name, exc)
+        raise
     channel = root.find("./channel")
     if channel is None:
         return []
@@ -1907,22 +2287,332 @@ async def _fetch_issue_signals(client: httpx.AsyncClient, issue_slug: str, limit
     return items
 
 
+def _pick_link_from_entry(entry: ElementTree.Element) -> str:
+    link_node = entry.find("link")
+    if link_node is None:
+        return ""
+    href = link_node.attrib.get("href", "").strip()
+    if href:
+        return href
+    return (link_node.text or "").strip()
+
+
+def _is_relevant_to_issue(issue_slug: str, title: str, summary: str) -> bool:
+    text = f"{title} {summary}".lower()
+    hints = ISSUE_FILTER_HINTS.get(issue_slug, ())
+    if not hints:
+        return True
+    return any(token in text for token in hints)
+
+
+async def _fetch_global_feed_signals(client: httpx.AsyncClient, issue_slug: str, limit: int) -> list[SignalItem]:
+    return await _fetch_rss_sources_signals(client, issue_slug, _global_rss_sources(), limit)
+
+
+async def _fetch_rss_sources_signals(
+    client: httpx.AsyncClient,
+    issue_slug: str,
+    sources: list[dict[str, str]],
+    limit: int,
+) -> list[SignalItem]:
+    rows: list[SignalItem] = []
+    for source in sources:
+        try:
+            response = await client.get(source["url"], timeout=20)
+            response.raise_for_status()
+            root = ElementTree.fromstring(response.text)
+            _mark_source_success(source["name"])
+        except Exception:
+            _mark_source_error(source["name"], "rss_fetch_failed")
+            continue
+
+        channel = root.find("./channel")
+        if channel is not None:
+            candidates = channel.findall("item")
+            for entry in candidates:
+                title = _extract_text(entry.find("title"))
+                link = _extract_text(entry.find("link"))
+                published = _safe_parse_datetime(_extract_text(entry.find("pubDate")))
+                summary = _extract_text(entry.find("description"))
+                if not title or not link:
+                    continue
+                if not _is_relevant_to_issue(issue_slug, title, summary):
+                    continue
+                rows.append(
+                    SignalItem(
+                        title=title,
+                        link=link,
+                        source=source["name"],
+                        published_utc=published,
+                        issue=issue_slug,
+                        summary=summary,
+                    )
+                )
+                if len(rows) >= limit:
+                    return rows
+            continue
+
+        entries = root.findall(".//{http://www.w3.org/2005/Atom}entry")
+        for entry in entries:
+            title = _extract_text(entry.find("{http://www.w3.org/2005/Atom}title"))
+            summary = _extract_text(entry.find("{http://www.w3.org/2005/Atom}summary"))
+            if not summary:
+                summary = _extract_text(entry.find("{http://www.w3.org/2005/Atom}content"))
+            link = _pick_link_from_entry(entry.find("{http://www.w3.org/2005/Atom}link") or entry)
+            published = _safe_parse_datetime(
+                _extract_text(entry.find("{http://www.w3.org/2005/Atom}updated"))
+                or _extract_text(entry.find("{http://www.w3.org/2005/Atom}published"))
+            )
+            if not title or not link:
+                continue
+            if not _is_relevant_to_issue(issue_slug, title, summary):
+                continue
+            rows.append(
+                SignalItem(
+                    title=title,
+                    link=link,
+                    source=source["name"],
+                    published_utc=published,
+                    issue=issue_slug,
+                    summary=summary,
+                )
+            )
+            if len(rows) >= limit:
+                return rows
+    return rows
+
+
+async def _fetch_alternative_feed_signals(client: httpx.AsyncClient, issue_slug: str, limit: int) -> list[SignalItem]:
+    return await _fetch_rss_sources_signals(client, issue_slug, _alternative_rss_sources(), limit)
+
+
+def _feedly_streams() -> list[str]:
+    raw = os.getenv("FEEDLY_STREAM_IDS", "").strip()
+    if not raw:
+        default = os.getenv("FEEDLY_STREAM_ID", "").strip()
+        return [default] if default else []
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _feedly_alt_streams() -> list[str]:
+    raw = os.getenv("FEEDLY_ALT_STREAM_IDS", "").strip()
+    if not raw:
+        return []
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+async def _fetch_feedly_signals(client: httpx.AsyncClient, issue_slug: str, limit: int) -> list[SignalItem]:
+    token = os.getenv("FEEDLY_API_KEY", "").strip()
+    streams = _feedly_streams()
+    if not token or not streams:
+        return []
+
+    rows: list[SignalItem] = []
+    headers = {"Authorization": f"Bearer {token}"}
+    for stream_id in streams:
+        source_name = f"Feedly:{stream_id}"
+        try:
+            url = (
+                "https://api.feedly.com/v3/streams/contents"
+                f"?streamId={quote(stream_id, safe='')}&count={max(20, limit * 2)}"
+            )
+            response = await client.get(url, headers=headers, timeout=25)
+            response.raise_for_status()
+            payload = response.json()
+            _mark_source_success(source_name)
+        except Exception as exc:
+            _mark_source_error(source_name, exc)
+            continue
+
+        for item in payload.get("items", []) if isinstance(payload, dict) else []:
+            title = str(item.get("title", "")).strip()
+            summary = ""
+            summary_obj = item.get("summary")
+            if isinstance(summary_obj, dict):
+                summary = str(summary_obj.get("content", "")).strip()
+            if not summary:
+                content_obj = item.get("content")
+                if isinstance(content_obj, dict):
+                    summary = str(content_obj.get("content", "")).strip()
+            alternate = item.get("alternate")
+            link = ""
+            if isinstance(alternate, list) and alternate:
+                first = alternate[0]
+                if isinstance(first, dict):
+                    link = str(first.get("href", "")).strip()
+            source = "Feedly"
+            origin = item.get("origin")
+            if isinstance(origin, dict):
+                source = str(origin.get("title", "Feedly")).strip() or "Feedly"
+            published_ms = item.get("published")
+            published = None
+            if isinstance(published_ms, (int, float)):
+                published = datetime.fromtimestamp(float(published_ms) / 1000.0, tz=UTC)
+            if not title or not link:
+                continue
+            if not _is_relevant_to_issue(issue_slug, title, summary):
+                continue
+            rows.append(
+                SignalItem(
+                    title=title,
+                    link=link,
+                    source=source,
+                    published_utc=published,
+                    issue=issue_slug,
+                    summary=summary,
+                )
+            )
+            if len(rows) >= limit:
+                return rows
+    return rows
+
+
+async def _fetch_feedly_alt_signals(client: httpx.AsyncClient, issue_slug: str, limit: int) -> list[SignalItem]:
+    token = os.getenv("FEEDLY_API_KEY", "").strip()
+    streams = _feedly_alt_streams()
+    if not token or not streams:
+        return []
+
+    rows: list[SignalItem] = []
+    headers = {"Authorization": f"Bearer {token}"}
+    for stream_id in streams:
+        source_name = f"FeedlyAlt:{stream_id}"
+        try:
+            url = (
+                "https://api.feedly.com/v3/streams/contents"
+                f"?streamId={quote(stream_id, safe='')}&count={max(20, limit * 2)}"
+            )
+            response = await client.get(url, headers=headers, timeout=25)
+            response.raise_for_status()
+            payload = response.json()
+            _mark_source_success(source_name)
+        except Exception as exc:
+            _mark_source_error(source_name, exc)
+            continue
+
+        for item in payload.get("items", []) if isinstance(payload, dict) else []:
+            title = str(item.get("title", "")).strip()
+            summary = ""
+            summary_obj = item.get("summary")
+            if isinstance(summary_obj, dict):
+                summary = str(summary_obj.get("content", "")).strip()
+            if not summary:
+                content_obj = item.get("content")
+                if isinstance(content_obj, dict):
+                    summary = str(content_obj.get("content", "")).strip()
+            alternate = item.get("alternate")
+            link = ""
+            if isinstance(alternate, list) and alternate:
+                first = alternate[0]
+                if isinstance(first, dict):
+                    link = str(first.get("href", "")).strip()
+            source = "FeedlyAlt"
+            origin = item.get("origin")
+            if isinstance(origin, dict):
+                source = str(origin.get("title", "FeedlyAlt")).strip() or "FeedlyAlt"
+            published_ms = item.get("published")
+            published = None
+            if isinstance(published_ms, (int, float)):
+                published = datetime.fromtimestamp(float(published_ms) / 1000.0, tz=UTC)
+            if not title or not link:
+                continue
+            rows.append(
+                SignalItem(
+                    title=title,
+                    link=link,
+                    source=source,
+                    published_utc=published,
+                    issue=issue_slug,
+                    summary=summary,
+                )
+            )
+            if len(rows) >= limit:
+                return rows
+    return rows
+
+
+def _signal_cache_ttl_seconds() -> int:
+    return max(60, int(os.getenv("SIGNAL_INGEST_TTL_SECONDS", "180")))
+
+
+async def _refresh_issue_signal_cache(issue_slug: str, *, per_issue_limit: int) -> None:
+    try:
+        async with httpx.AsyncClient(headers={"User-Agent": "geostate-engine/0.1"}) as client:
+            google_rows = await _fetch_issue_signals(client, issue_slug, per_issue_limit)
+            global_rows = await _fetch_global_feed_signals(client, issue_slug, max(8, per_issue_limit // 2))
+            feedly_rows = await _fetch_feedly_signals(client, issue_slug, max(10, per_issue_limit // 2))
+            combined = sorted(
+                [*google_rows, *global_rows, *feedly_rows],
+                key=lambda row: row.published_utc or datetime(1970, 1, 1, tzinfo=UTC),
+                reverse=True,
+            )
+            dedupe: dict[str, SignalItem] = {}
+            for row in combined:
+                key = "".join(ch for ch in row.title.lower() if ch.isalnum() or ch.isspace()).strip()
+                if not key or key in dedupe:
+                    continue
+                dedupe[key] = row
+                if len(dedupe) >= per_issue_limit:
+                    break
+            rows = list(dedupe.values())
+            if rows:
+                _SIGNAL_CACHE[issue_slug] = (datetime.now(UTC), rows)
+    except Exception:
+        # ingestion refresh failures should not break request path
+        pass
+    finally:
+        _SIGNAL_REFRESH_TASKS.pop(issue_slug, None)
+
+
+async def ingest_live_signals_background(selected_issues: list[str] | None = None, *, per_issue_limit: int = 20) -> None:
+    issue_slugs = [slug for slug in (selected_issues or list(ISSUE_CATALOG.keys())) if slug in ISSUE_CATALOG]
+    if not issue_slugs:
+        issue_slugs = list(ISSUE_CATALOG.keys())
+    tasks = []
+    for slug in issue_slugs:
+        tasks.append(_refresh_issue_signal_cache(slug, per_issue_limit=per_issue_limit))
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
 async def fetch_signals(selected_issues: list[str], *, use_live: bool, per_issue_limit: int = 20) -> list[SignalItem]:
     issue_slugs = [slug for slug in selected_issues if slug in ISSUE_CATALOG]
     if not issue_slugs:
-        issue_slugs = list(ISSUE_CATALOG.keys())[:3]
+        issue_slugs = _default_selected_issues()
 
     if not use_live:
         return _fallback_demo_signals(issue_slugs)
 
-    try:
-        async with httpx.AsyncClient(headers={"User-Agent": "geostate-engine/0.1"}) as client:
-            tasks = [_fetch_issue_signals(client, slug, per_issue_limit) for slug in issue_slugs]
-            batches = await asyncio.gather(*tasks)
-            merged = [row for batch in batches for row in batch]
-            return merged or _fallback_demo_signals(issue_slugs)
-    except (httpx.HTTPError, ElementTree.ParseError):
-        return _fallback_demo_signals(issue_slugs)
+    ttl = _signal_cache_ttl_seconds()
+    now = datetime.now(UTC)
+    merged: list[SignalItem] = []
+    missing: list[str] = []
+    stale: list[str] = []
+    for slug in issue_slugs:
+        cached = _SIGNAL_CACHE.get(slug)
+        if not cached:
+            missing.append(slug)
+            continue
+        cached_at, rows = cached
+        age = (now - cached_at).total_seconds()
+        if age > ttl:
+            stale.append(slug)
+        merged.extend(rows)
+
+    if missing:
+        try:
+            await asyncio.gather(*[_refresh_issue_signal_cache(slug, per_issue_limit=per_issue_limit) for slug in missing])
+            for slug in missing:
+                cached_now = _SIGNAL_CACHE.get(slug)
+                if cached_now:
+                    merged.extend(cached_now[1])
+        except Exception:
+            pass
+
+    for slug in stale:
+        if slug not in _SIGNAL_REFRESH_TASKS:
+            _SIGNAL_REFRESH_TASKS[slug] = asyncio.create_task(_refresh_issue_signal_cache(slug, per_issue_limit=per_issue_limit))
+
+    return merged or _fallback_demo_signals(issue_slugs)
 
 
 async def build_dashboard_snapshot(
@@ -1937,6 +2627,11 @@ async def build_dashboard_snapshot(
         lens = "global"
     provider_info = resolve_intelligence_provider(prefer_local_ai=local_ai_enabled)
     signals = await fetch_signals(selected_issues, use_live=use_live)
+    signals, signal_digest = await _semantic_enrich_signals(
+        signals,
+        provider_info=provider_info,
+        selected_issues=selected_issues,
+    )
     force_scores = _aggregate_forces(signals)
     issue_pressure = _issue_pressure(selected_issues)
     driving_rows = _driving_forces_method(force_scores)
@@ -1981,8 +2676,8 @@ async def build_dashboard_snapshot(
     )
 
     explanation = (
-        "Scenario movement is derived from weighted signal density across military, economic, "
-        "diplomatic, narrative, ideological/perception, and cyber forces. Scores are heuristic in this v1 slice."
+        "Scenario movement is derived from semantically parsed source signals across military, economic, "
+        "diplomatic, narrative, ideological/perception, and cyber forces, with deterministic fallback when AI parsing is unavailable."
     )
     prediction = (
         "Short-horizon expectation: volatility remains elevated while diplomatic channels and coercive "
@@ -2004,6 +2699,7 @@ async def build_dashboard_snapshot(
         "model_version": provider_info["model_version"],
         "areas": [
             {"area": "signal scoring", "engine": provider_info["provider"] if provider_info["llm_enabled"] else "deterministic"},
+            {"area": "signal summarization", "engine": provider_info["provider"] if provider_info["llm_enabled"] else "deterministic"},
             {"area": "force split", "engine": "deterministic"},
             {"area": "scenario fusion", "engine": "deterministic"},
             {"area": "consensus brief", "engine": provider_info["provider"] if provider_info["llm_enabled"] else "deterministic"},
@@ -2060,6 +2756,8 @@ async def build_dashboard_snapshot(
         "creative_prediction": creative_prediction,
         "scenario_visual": scenario_visual,
         "update_policy": refresh_policy,
+        "signal_digest": signal_digest,
+        "source_health": source_health_rows(),
         "alternative_intelligence": {
             "disclaimer": "Alternative/esoteric sources are not validated truth. Use for narrative-monitoring only.",
             "sources": ALTERNATIVE_SOURCE_FEEDS,
@@ -2092,8 +2790,9 @@ async def build_alternative_snapshot(
         "model_version": base.get("intelligence_metadata", {}).get("model_version", "heuristic-v1"),
     }
     generated_at = datetime.now(UTC)
-    alternative_signals = _build_alternative_signals(
+    alternative_signals = await fetch_alternative_signals(
         selected_issues,
+        use_live=use_live,
         provider_info=provider_info,
         generated_at=generated_at,
     )
@@ -2156,7 +2855,7 @@ async def build_alternative_snapshot(
         alternative_mode=True,
         visual_prompt_override=alt_creative_prediction.get("visual_prompt") or None,
     )
-    merged_signals = (base.get("signals", [])[:10]) + alternative_signals[:10]
+    merged_signals = alternative_signals[:20]
     refresh_policy = _recommended_refresh_policy(use_live=use_live, signals=alt_signal_items)
 
     return {

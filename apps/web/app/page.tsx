@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type IssueItem = {
   slug: string;
@@ -131,6 +131,13 @@ type Snapshot = {
     cache_hit: boolean;
     cached_at_utc: string;
   };
+  source_health?: {
+    source: string;
+    status: string;
+    last_success_utc: string | null;
+    last_error_utc: string | null;
+    last_error: string | null;
+  }[];
   snapshot_history?: {
     generated_utc: string;
     mode: string;
@@ -209,6 +216,7 @@ const COUNTRY_COORDS: Record<string, { lat: number; lon: number }> = {
   Qatar: { lat: 25.3, lon: 51.2 },
   Kuwait: { lat: 29.3, lon: 47.5 },
   Oman: { lat: 21.5, lon: 55.9 },
+  Yemen: { lat: 15.6, lon: 47.6 },
   Jordan: { lat: 31.2, lon: 36.3 },
   Egypt: { lat: 26.8, lon: 30.8 },
   Turkey: { lat: 39.0, lon: 35.2 },
@@ -511,9 +519,7 @@ function GaugeDial({
 export default function HomePage() {
   const [issues, setIssues] = useState<IssueItem[]>([]);
   const [selectedIssues, setSelectedIssues] = useState<string[]>([
-    "red-sea-shipping",
     "iran-israel-dynamics",
-    "russia-ukraine-war",
   ]);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [loading, setLoading] = useState(false);
@@ -524,6 +530,8 @@ export default function HomePage() {
   const [countryFocusPool, setCountryFocusPool] = useState<string[]>(DEFAULT_COUNTRY_FOCUS_OPTIONS);
   const [showIntelligenceMap, setShowIntelligenceMap] = useState(false);
   const [localAiEnhancement, setLocalAiEnhancement] = useState(true);
+  const [showConfigPanel, setShowConfigPanel] = useState(false);
+  const liveTapeRef = useRef<HTMLDivElement | null>(null);
 
   const selectedIssueParam = useMemo(() => selectedIssues.join(","), [selectedIssues]);
   const activeLensFocus = useMemo(() => {
@@ -562,6 +570,30 @@ export default function HomePage() {
     }
     return "AI image unavailable; showing fallback visual. Check OPENAI_API_KEY and restart API.";
   }, [snapshot?.scenario_visual?.generated, snapshot?.scenario_visual?.image_data_url, snapshot?.scenario_visual?.provider, snapshot?.scenario_visual?.model]);
+  const nextRefreshMinutes = useMemo(() => {
+    const seconds = snapshot?.update_policy?.recommended_interval_seconds ?? 900;
+    return Math.max(1, Math.round(seconds / 60));
+  }, [snapshot?.update_policy?.recommended_interval_seconds]);
+  const lensBadge = useMemo(() => {
+    if (lensType === "region") {
+      return `Region: ${activeLensFocus || "All"}`;
+    }
+    if (lensType === "country") {
+      return `Country: ${activeLensFocus || "All"}`;
+    }
+    return "Global";
+  }, [lensType, activeLensFocus]);
+  const predictionSignals = useMemo(() => {
+    const ranked = [...(snapshot?.scenarios ?? [])].sort((a, b) => b.probability - a.probability);
+    const top = ranked[0];
+    const second = ranked[1];
+    const gap = Math.max(0, (top?.probability ?? 0) - (second?.probability ?? 0));
+    return [
+      `Lead scenario: ${top?.name ?? "Pending"} (${Math.round((top?.probability ?? 0) * 100)}%).`,
+      `Lead status: ${leadStrength(top?.probability ?? 0, second?.probability ?? 0)} (gap ${Math.round(gap * 100)} pts).`,
+      `Conflict escalation: ${snapshot?.conflict_escalation.percent ?? 0}% (${snapshot?.conflict_escalation.band ?? "Unknown"}).`,
+    ];
+  }, [snapshot?.scenarios, snapshot?.conflict_escalation.percent, snapshot?.conflict_escalation.band]);
   const regionFocusOptions = useMemo(() => {
     const fromSnapshot = (snapshot?.impacts.regions_world ?? []).map((item) => canonicalRegionName(item.label));
     const merged = [...DEFAULT_REGION_FOCUS_OPTIONS.map(canonicalRegionName), ...fromSnapshot];
@@ -660,6 +692,17 @@ export default function HomePage() {
       label: leadStrength(top?.probability ?? 0, second?.probability ?? 0),
     };
   }, [snapshot]);
+  const compactNarrative = useMemo(() => {
+    const text = (creativeStoryPreview ?? "").replace(/\s+/g, " ").trim();
+    if (!text) {
+      return "Narrative pending.";
+    }
+    const words = text.split(" ");
+    if (words.length <= 45) {
+      return text;
+    }
+    return `${words.slice(0, 45).join(" ")}...`;
+  }, [creativeStoryPreview]);
 
   const visibleCountries = useMemo(() => {
     const all = snapshot?.impacts.countries ?? [];
@@ -758,6 +801,25 @@ export default function HomePage() {
     return () => source.close();
   }, [selectedIssueParam, lensType, activeLensFocus, localAiEnhancement, snapshot?.update_policy?.recommended_interval_seconds]);
 
+  useEffect(() => {
+    const node = liveTapeRef.current;
+    if (!node) {
+      return undefined;
+    }
+    const timer = setInterval(() => {
+      const maxScroll = node.scrollHeight - node.clientHeight;
+      if (maxScroll <= 0) {
+        return;
+      }
+      if (node.scrollTop >= maxScroll - 8) {
+        node.scrollTop = 0;
+        return;
+      }
+      node.scrollBy({ top: 42, behavior: "smooth" });
+    }, 2600);
+    return () => clearInterval(timer);
+  }, [snapshot?.signals]);
+
   const toggleIssue = (slug: string) => {
     setSelectedIssues((prev) => {
       if (prev.includes(slug)) {
@@ -769,23 +831,27 @@ export default function HomePage() {
 
   return (
     <main className="page-shell visual-heavy">
+      <header className="sticky-nav">
+        <span className="app-name">GEOPOLITICAL STATE ENGINE</span>
+        <span className="live-indicator">
+          <span className="live-dot" />
+          LIVE {snapshot?.generated_utc ? new Date(snapshot.generated_utc).toLocaleString() : "updating"}
+        </span>
+        <button type="button" className="config-btn" onClick={() => setShowConfigPanel((prev) => !prev)}>
+          ⚙
+        </button>
+      </header>
       <section className="hero">
         <div>
           <p className="eyebrow">Geopolitical State Engine</p>
           <h1>One-page scenario command dashboard</h1>
           <p className="subcopy">
-            <span className="live-dot" /> {snapshot?.mode?.toUpperCase() ?? "LIVE"} feed | {snapshot?.generated_utc ? new Date(snapshot.generated_utc).toLocaleString() : "updating"}
-          </p>
-          <p className="muted mini">
-            AI engine: {snapshot?.analysis_provenance?.active_provider ?? "deterministic"} ({snapshot?.analysis_provenance?.model_version ?? "heuristic-v1"}) |
-            Image engine: {snapshot?.scenario_visual?.provider ?? "none"} ({snapshot?.scenario_visual?.model ?? "none"}) |
-            Refresh: every {Math.round((snapshot?.update_policy?.recommended_interval_seconds ?? 900) / 60)} min
-          </p>
-          <p className="muted mini">
-            Last saved snapshot: {snapshot?.cache?.cached_at_utc ? new Date(snapshot.cache.cached_at_utc).toLocaleString() : "pending"} | Next refresh target: {snapshot?.update_policy?.next_refresh_utc ? new Date(snapshot.update_policy.next_refresh_utc).toLocaleString() : "pending"}
+            <span className="live-dot" /> LIVE | Next refresh in {nextRefreshMinutes} min
+            {" "}
+            <button type="button" className="engine-link-btn" onClick={() => setShowConfigPanel(true)}>Engine details</button>
           </p>
           <p className="hero-alt-link-wrap">
-            <Link href="/alternative" className="hero-alt-link">OPEN ALTERNATIVE NARRATIVE DASHBOARD</Link>
+            <Link href="/alternative" className="alt-source-btn">⊞ Alternative Source View</Link>
           </p>
         </div>
         <div className="hero-gauges">
@@ -826,7 +892,7 @@ export default function HomePage() {
       </section>
 
       <section className="panel compact controls-line">
-        <div className="control-block">
+        <div className="control-block issue-only">
           <h2>Issue Buckets</h2>
           <p className="muted mini-label">Toggle issue buckets</p>
           <div className="chip-grid">
@@ -848,10 +914,80 @@ export default function HomePage() {
             Active: {selectedIssues.length}
           </p>
         </div>
-        <div className="control-block">
-          <h2>Impact Lens</h2>
-          <p className="muted mini-label">Global / region / country scope</p>
-          <div className="lens-row">
+      </section>
+
+      <section className="panel compact">
+        <h2>Predicted Scenario Snapshot</h2>
+        <p className="muted mini">{scenarioImageStatus}</p>
+        <div className="prediction-visual-grid">
+          <Image src={scenarioVisualDataUrl} alt="Predicted scenario AI-style visualization" className="viz-image prediction-image" width={860} height={260} unoptimized />
+          <div className="prediction-timeline">
+            <ul className="signal-list prediction-signal-list">
+              {predictionSignals.map((line) => (
+                <li key={line}><p>{line}</p></li>
+              ))}
+            </ul>
+            <p className="prediction-summary">{shortTimelineText}</p>
+            <details>
+              <summary>Read full narrative</summary>
+              <p className="muted prediction-summary">{compactNarrative}</p>
+              <p className="muted mini">{creativeStoryPreview}</p>
+            </details>
+          </div>
+        </div>
+      </section>
+
+      <section className="panel compact">
+        <details open={showConfigPanel} onToggle={(event) => setShowConfigPanel((event.currentTarget as HTMLDetailsElement).open)}>
+          <summary>Configuration</summary>
+          <div className="metric-list">
+            <label>
+              <input
+                type="checkbox"
+                checked={localAiEnhancement}
+                onChange={(event) => setLocalAiEnhancement(event.target.checked)}
+              />{" "}
+              Local AI Enhancement (prefer on-device tier when available)
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={showIntelligenceMap}
+                onChange={(event) => setShowIntelligenceMap(event.target.checked)}
+              />{" "}
+              Show Intelligence Engine Map
+            </label>
+          </div>
+          <p className="muted mini">
+            AI engine: {snapshot?.analysis_provenance?.active_provider ?? "deterministic"} ({snapshot?.analysis_provenance?.model_version ?? "heuristic-v1"}) |
+            Image engine: {snapshot?.scenario_visual?.provider ?? "none"} ({snapshot?.scenario_visual?.model ?? "none"}) |
+            Refresh: every {nextRefreshMinutes} min
+          </p>
+          <p className="muted mini">
+            Last saved snapshot: {snapshot?.cache?.cached_at_utc ? new Date(snapshot.cache.cached_at_utc).toLocaleString() : "pending"} | Next refresh target: {snapshot?.update_policy?.next_refresh_utc ? new Date(snapshot.update_policy.next_refresh_utc).toLocaleString() : "pending"}
+          </p>
+          <h3>Source Health</h3>
+          <ul className="metric-list">
+            {(snapshot?.source_health ?? []).map((row) => (
+              <li key={row.source}>
+                <span>{row.source}</span>
+                <strong>{row.status === "ok" ? "OK" : "Degraded"}</strong>
+              </li>
+            ))}
+          </ul>
+          <p className="muted mini">
+            Active provider: {snapshot?.analysis_provenance?.active_provider ?? "deterministic"} | Tier: {snapshot?.analysis_provenance?.active_tier ?? "tier3-deterministic"}
+          </p>
+          <p className="muted mini">
+            Alternative narrative analysis: <Link href="/alternative">open separate page</Link>
+          </p>
+        </details>
+      </section>
+
+      <section className="panel">
+        <div className="map-header-row">
+          <h2>{lensType === "country" ? "Country Focus Impact Map" : "Country Impact Map"}</h2>
+          <div className="map-lens-controls">
             <div className="chip-grid">
               {(["global", "region", "country"] as const).map((lens) => (
                 <button
@@ -882,58 +1018,9 @@ export default function HomePage() {
                 ))}
               </select>
             )}
-          </div>
-          <p className="muted mini">
-            Active lens: {lensType}
-            {activeLensFocus ? ` (${activeLensFocus})` : ""}
-          </p>
-        </div>
-      </section>
-
-      <section className="panel compact">
-        <h2>Predicted Scenario Snapshot</h2>
-        <p className="muted mini">{scenarioImageStatus}</p>
-        <div className="prediction-visual-grid">
-          <Image src={scenarioVisualDataUrl} alt="Predicted scenario AI-style visualization" className="viz-image prediction-image" width={860} height={260} unoptimized />
-          <div className="prediction-timeline">
-            <p className="prediction-summary">{shortTimelineText}</p>
-            <p className="muted prediction-summary">{creativeStoryPreview}</p>
+            <span className="lens-chip">{lensBadge}</span>
           </div>
         </div>
-      </section>
-
-      <section className="panel compact">
-        <details>
-          <summary>Configuration</summary>
-          <div className="metric-list">
-            <label>
-              <input
-                type="checkbox"
-                checked={localAiEnhancement}
-                onChange={(event) => setLocalAiEnhancement(event.target.checked)}
-              />{" "}
-              Local AI Enhancement (prefer on-device tier when available)
-            </label>
-            <label>
-              <input
-                type="checkbox"
-                checked={showIntelligenceMap}
-                onChange={(event) => setShowIntelligenceMap(event.target.checked)}
-              />{" "}
-              Show Intelligence Engine Map
-            </label>
-          </div>
-          <p className="muted mini">
-            Active provider: {snapshot?.analysis_provenance?.active_provider ?? "deterministic"} | Tier: {snapshot?.analysis_provenance?.active_tier ?? "tier3-deterministic"}
-          </p>
-          <p className="muted mini">
-            Alternative narrative analysis: <Link href="/alternative">open separate page</Link>
-          </p>
-        </details>
-      </section>
-
-      <section className="panel">
-        <h2>{lensType === "country" ? "Country Focus Impact Map" : "Country Impact Map"}</h2>
         <div className="map-live-grid full-width">
           <div className="country-map-wrap">
             <ImpactMap points={countryMapPoints} lensType={lensType} lensFocus={activeLensFocus} />
@@ -943,7 +1030,7 @@ export default function HomePage() {
             <h3>Live Update Tape</h3>
             {loading && <p className="muted mini">Refreshing...</p>}
             {error && <p className="error">{error}</p>}
-            <div className="live-tape-scroll">
+            <div className="live-tape-scroll" ref={liveTapeRef}>
               <ul className="signal-list">
                 {(snapshot?.signals ?? []).map((signal) => (
                   <li key={`${signal.link}-${signal.title}`}>
@@ -953,6 +1040,11 @@ export default function HomePage() {
                     </p>
                   </li>
                 ))}
+                {(snapshot?.signals ?? []).length === 0 && (
+                  <li>
+                    <p className="muted mini">No fresh signals yet. Waiting for ingest cycle...</p>
+                  </li>
+                )}
               </ul>
             </div>
           </div>
@@ -960,7 +1052,7 @@ export default function HomePage() {
       </section>
 
       <section className="panel">
-        <h2>Region / Worldwide Impact</h2>
+        <h2>Region / Worldwide Impact <span className="lens-chip">{lensBadge}</span></h2>
         <div className="impact-grid">
           {(snapshot?.impacts.regions_world ?? []).map((item) => (
             <div key={item.label} className="impact-card">

@@ -11,7 +11,13 @@ from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from geostate_api.services.scenario_analysis import ALTERNATIVE_SOURCE_FEEDS, ISSUE_CATALOG, build_alternative_snapshot, build_dashboard_snapshot
+from geostate_api.services.scenario_analysis import (
+    ALTERNATIVE_SOURCE_FEEDS,
+    ISSUE_CATALOG,
+    build_alternative_snapshot,
+    build_dashboard_snapshot,
+    ingest_live_signals_background,
+)
 
 router = APIRouter(tags=["analysis"])
 _SNAPSHOT_CACHE: dict[str, dict[str, Any]] = {}
@@ -21,13 +27,9 @@ _REFRESH_TASKS: dict[str, asyncio.Task[Any]] = {}
 _STORE_PATH = Path(__file__).resolve().parents[3] / "data" / "snapshot_store.json"
 _BACKGROUND_TASK: asyncio.Task[Any] | None = None
 _BACKGROUND_LAST_RUN_UTC: datetime | None = None
+_BACKGROUND_INGEST_LAST_RUN_UTC: datetime | None = None
 
-_DEFAULT_ISSUES: list[str] = [
-    "red-sea-shipping",
-    "gulf-energy-security",
-    "russia-ukraine-war",
-    "iran-israel-dynamics",
-]
+_DEFAULT_ISSUES: list[str] = [os.getenv("DEFAULT_ISSUE_BUCKET", "iran-israel-dynamics")]
 _BACKGROUND_PROFILES: list[dict[str, Any]] = [
     {
         "mode": "main",
@@ -61,7 +63,9 @@ def get_refresh_status() -> dict[str, Any]:
     return {
         "background_refresh_enabled": True,
         "background_refresh_interval_seconds": int(os.getenv("BACKGROUND_REFRESH_INTERVAL_SECONDS", "3600")),
+        "background_ingest_interval_seconds": int(os.getenv("BACKGROUND_INGEST_INTERVAL_SECONDS", "120")),
         "last_background_refresh_utc": None if _BACKGROUND_LAST_RUN_UTC is None else _BACKGROUND_LAST_RUN_UTC.isoformat(),
+        "last_background_ingest_utc": None if _BACKGROUND_INGEST_LAST_RUN_UTC is None else _BACKGROUND_INGEST_LAST_RUN_UTC.isoformat(),
         "cached_profiles": len(_SNAPSHOT_CACHE),
     }
 
@@ -275,14 +279,26 @@ async def _run_background_refresh_once() -> None:
 
 
 async def _background_refresh_loop() -> None:
-    interval = max(300, int(os.getenv("BACKGROUND_REFRESH_INTERVAL_SECONDS", "3600")))
+    global _BACKGROUND_INGEST_LAST_RUN_UTC
+    refresh_interval = max(300, int(os.getenv("BACKGROUND_REFRESH_INTERVAL_SECONDS", "3600")))
+    ingest_interval = max(60, int(os.getenv("BACKGROUND_INGEST_INTERVAL_SECONDS", "120")))
+    last_refresh = datetime.min.replace(tzinfo=UTC)
+    last_ingest = datetime.min.replace(tzinfo=UTC)
     while True:
+        now = datetime.now(UTC)
         try:
-            await _run_background_refresh_once()
+            if (now - last_ingest).total_seconds() >= ingest_interval:
+                await ingest_live_signals_background(list(ISSUE_CATALOG.keys()), per_issue_limit=25)
+                _BACKGROUND_INGEST_LAST_RUN_UTC = datetime.now(UTC)
+                last_ingest = _BACKGROUND_INGEST_LAST_RUN_UTC
+
+            if (now - last_refresh).total_seconds() >= refresh_interval:
+                await _run_background_refresh_once()
+                last_refresh = datetime.now(UTC)
         except Exception:
             # keep loop alive; next cycle retries
             pass
-        await asyncio.sleep(interval)
+        await asyncio.sleep(15)
 
 
 async def start_background_refresh_loop() -> None:

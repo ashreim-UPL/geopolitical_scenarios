@@ -3,7 +3,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import dynamic from "next/dynamic";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 const ImpactMap = dynamic(() => import("../components/impact-map"), { ssr: false });
 const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
@@ -59,6 +59,13 @@ type Snapshot = {
     stale_fallback?: boolean;
     warning?: string | null;
   };
+  source_health?: {
+    source: string;
+    status: string;
+    last_success_utc: string | null;
+    last_error_utc: string | null;
+    last_error: string | null;
+  }[];
   snapshot_history?: {
     generated_utc: string;
     mode: string;
@@ -92,6 +99,7 @@ const COUNTRY_COORDS: Record<string, { lat: number; lon: number }> = {
   Ukraine: { lat: 49.0, lon: 31.4 },
   China: { lat: 35.9, lon: 104.2 },
   India: { lat: 20.6, lon: 78.9 },
+  Yemen: { lat: 15.6, lon: 47.6 },
 };
 
 function severityColor(value: number): string {
@@ -127,9 +135,6 @@ function buildAlternativeScenarioVisualSvg(scenario: string, probability: number
 export default function AlternativePage() {
   const [issues, setIssues] = useState<IssueItem[]>([]);
   const [selectedIssues, setSelectedIssues] = useState<string[]>([
-    "red-sea-shipping",
-    "gulf-energy-security",
-    "russia-ukraine-war",
     "iran-israel-dynamics",
   ]);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -138,6 +143,7 @@ export default function AlternativePage() {
   const [regionFocus, setRegionFocus] = useState("Gulf");
   const [countryFocus, setCountryFocus] = useState("Iran");
   const [localAiEnhancement, setLocalAiEnhancement] = useState(true);
+  const liveTapeRef = useRef<HTMLDivElement | null>(null);
 
   const activeFocus = lensType === "region" ? regionFocus : lensType === "country" ? countryFocus : "";
   const selectedIssueParam = useMemo(() => selectedIssues.join(","), [selectedIssues]);
@@ -249,6 +255,25 @@ export default function AlternativePage() {
     }, intervalSeconds * 1000);
     return () => clearInterval(timer);
   }, [snapshot?.update_policy?.recommended_interval_seconds, selectedIssues, lensType, activeFocus, localAiEnhancement]);
+
+  useEffect(() => {
+    const node = liveTapeRef.current;
+    if (!node) {
+      return undefined;
+    }
+    const timer = setInterval(() => {
+      const maxScroll = node.scrollHeight - node.clientHeight;
+      if (maxScroll <= 0) {
+        return;
+      }
+      if (node.scrollTop >= maxScroll - 8) {
+        node.scrollTop = 0;
+        return;
+      }
+      node.scrollBy({ top: 42, behavior: "smooth" });
+    }, 2600);
+    return () => clearInterval(timer);
+  }, [snapshot?.signals]);
 
   const toggleIssue = (slug: string) => {
     setSelectedIssues((prev) => (prev.includes(slug) ? prev.filter((x) => x !== slug) : [...prev, slug]));
@@ -389,7 +414,7 @@ export default function AlternativePage() {
           <div className="live-tape-box">
             <h3>Rumor / Gossip Tape</h3>
             {error && <p className="error">{error}</p>}
-            <div className="live-tape-scroll">
+            <div className="live-tape-scroll" ref={liveTapeRef}>
               <ul className="signal-list">
                 {(snapshot?.signals ?? []).map((signal) => (
                   <li key={`${signal.link}-${signal.title}`}>
@@ -399,6 +424,11 @@ export default function AlternativePage() {
                     </p>
                   </li>
                 ))}
+                {(snapshot?.signals ?? []).length === 0 && (
+                  <li>
+                    <p className="muted mini">No fresh alternative signals yet. Waiting for ingest cycle...</p>
+                  </li>
+                )}
               </ul>
             </div>
           </div>
