@@ -42,6 +42,13 @@ pytest -q
 - Relevance filtering is LLM-assisted when provider keys are available:
   - each signal gets semantic summary + keywords + assigned issue bucket + relevance score
   - out-of-scope signals are excluded from live tape
+- Event-centric surfacing is enabled:
+  - normalized/accepted signals are clustered into canonical event memory
+  - event cards are refreshed continuously (`event_cards`)
+  - node-level metrics are emitted (`node_metrics`)
+  - each signal includes `signal_impact_score` in range `-100..+100`
+    - negative = escalatory / stress
+    - positive = stabilizing / de-risking
 
 ## AI Provider Setup (.env)
 

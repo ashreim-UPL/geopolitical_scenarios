@@ -151,6 +151,22 @@ _SIGNAL_REFRESH_TASKS: dict[str, asyncio.Task[Any]] = {}
 _SEMANTIC_PARSE_CACHE: dict[str, tuple[datetime, dict[str, Any]]] = {}
 _SEMANTIC_PARSE_CACHE_TTL = timedelta(minutes=max(5, int(os.getenv("SEMANTIC_PARSE_CACHE_TTL_MINUTES", "30"))))
 _SOURCE_HEALTH: dict[str, dict[str, str | None]] = {}
+_EVENT_MEMORY: dict[str, dict[str, Any]] = {}
+_EVENT_CARD_MEMORY: dict[str, dict[str, Any]] = {}
+
+SOURCE_RELIABILITY: dict[str, float] = {
+    "Google News": 0.74,
+    "BBC World": 0.88,
+    "Guardian World": 0.84,
+    "Al Jazeera": 0.8,
+    "Reuters": 0.9,
+    "Associated Press": 0.9,
+    "Feedly": 0.78,
+    "EUvsDisinfo": 0.65,
+    "HKS Misinformation Review": 0.7,
+    "Sky News Strange": 0.55,
+    "demo-source": 0.4,
+}
 
 
 SCENARIOS: tuple[str, ...] = (
@@ -281,6 +297,14 @@ class SignalItem:
     ai_relevance_score: float | None = None
     ai_assigned_issue: str | None = None
     ai_include_in_scope: bool = True
+    primary_class: str = "geopolitics"
+    secondary_classes: tuple[str, ...] = ()
+    entities: tuple[str, ...] = ()
+    candidate_event_label: str = ""
+    candidate_event_type: str = "event_update"
+    novelty_hint: str = ""
+    signal_impact_score: int = 0
+    source_reliability: float = 0.6
 
 
 def _to_google_news_rss_url(query: str) -> str:
@@ -427,6 +451,226 @@ def _extract_json_snippet(raw: str) -> str:
     return text
 
 
+def _deterministic_signal_annotation(item: SignalItem) -> None:
+    text = f"{item.title} {item.summary}".lower()
+    if any(token in text for token in ("ceasefire", "talks", "agreement", "corridor deal", "de-escalation")):
+        item.signal_impact_score = 28
+        item.novelty_hint = "confirmation"
+    elif any(token in text for token in ("strike", "attack", "missile", "incursion", "closure", "sanction")):
+        item.signal_impact_score = -42
+        item.novelty_hint = "escalation"
+    else:
+        item.signal_impact_score = -8 if any(token in text for token in ("warning", "threat", "risk")) else 5
+        item.novelty_hint = "new_fact"
+    item.primary_class = "geopolitics"
+    item.candidate_event_label = item.title[:160]
+    item.candidate_event_type = "event_update"
+
+
+def _source_reliability(source_name: str) -> float:
+    if source_name in SOURCE_RELIABILITY:
+        return SOURCE_RELIABILITY[source_name]
+    lowered = source_name.lower()
+    if "reuters" in lowered:
+        return SOURCE_RELIABILITY["Reuters"]
+    if "ap" in lowered or "associated press" in lowered:
+        return SOURCE_RELIABILITY["Associated Press"]
+    if "feedly" in lowered:
+        return SOURCE_RELIABILITY["Feedly"]
+    return 0.65
+
+
+def _normalize_and_quality_gate(
+    items: list[SignalItem],
+    *,
+    min_source_reliability: float = 0.45,
+) -> tuple[list[SignalItem], list[dict[str, Any]], dict[str, Any]]:
+    accepted: list[SignalItem] = []
+    rejected: list[dict[str, Any]] = []
+    seen_hash: set[str] = set()
+    now = datetime.now(UTC)
+    for item in items:
+        item.source_reliability = _source_reliability(item.source)
+        text = f"{item.title} {item.summary}".strip()
+        title_key = "".join(ch for ch in item.title.lower() if ch.isalnum() or ch.isspace()).strip()
+        if not title_key or title_key in seen_hash:
+            rejected.append({"title": item.title, "reason": "duplicate"})
+            continue
+        seen_hash.add(title_key)
+        if len(text) < 24:
+            rejected.append({"title": item.title, "reason": "too_short"})
+            continue
+        if item.source_reliability < min_source_reliability:
+            rejected.append({"title": item.title, "reason": "low_source_reliability"})
+            continue
+        if item.published_utc and (now - item.published_utc).total_seconds() > 96 * 3600:
+            rejected.append({"title": item.title, "reason": "too_old"})
+            continue
+        accepted.append(item)
+    metrics = {
+        "input_count": len(items),
+        "accepted_count": len(accepted),
+        "rejected_count": len(rejected),
+        "reject_rate": round((len(rejected) / max(1, len(items))), 3),
+    }
+    return accepted, rejected, metrics
+
+
+def _event_signature_for_signal(item: SignalItem) -> str:
+    issue = item.ai_assigned_issue or item.issue or "unknown"
+    event_type = item.candidate_event_type or "event_update"
+    entities = ",".join(sorted(item.entities[:4])) if item.entities else ""
+    base = f"{issue}|{event_type}|{entities or item.candidate_event_label.lower()[:90]}"
+    return str(hash(base))
+
+
+def _event_status(last_seen_at: datetime, updates: int, unresolved: int) -> str:
+    age_hours = (datetime.now(UTC) - last_seen_at).total_seconds() / 3600
+    if age_hours <= 6 and updates <= 2:
+        return "breaking"
+    if age_hours <= 72:
+        return "active"
+    if age_hours <= 120 and unresolved > 0:
+        return "stabilizing"
+    if age_hours > 168:
+        return "stale"
+    return "closed"
+
+
+def _update_event_memory(signals: list[SignalItem]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    changed_events: list[dict[str, Any]] = []
+    matched = 0
+    created = 0
+    for item in signals:
+        sig = _event_signature_for_signal(item)
+        state = _EVENT_MEMORY.get(sig)
+        now = datetime.now(UTC)
+        update_type = "new_event"
+        if state is None:
+            state = {
+                "event_id": f"evt_{abs(hash(sig))}",
+                "signature": sig,
+                "canonical_title": item.candidate_event_label or item.title,
+                "primary_class": item.primary_class,
+                "secondary_classes": list(item.secondary_classes),
+                "entities": list(item.entities),
+                "keywords": list(item.ai_keywords),
+                "first_seen_at": now,
+                "last_seen_at": now,
+                "linked_article_ids": [],
+                "key_facts": [],
+                "unresolved_points": [],
+                "timeline": [],
+                "confidence_score": 0.6,
+                "status": "breaking",
+            }
+            _EVENT_MEMORY[sig] = state
+            created += 1
+        else:
+            matched += 1
+            update_type = "new_fact"
+            state["last_seen_at"] = now
+
+        if item.signal_impact_score <= -40:
+            update_type = "escalation"
+        elif item.signal_impact_score >= 40:
+            update_type = "stabilization"
+
+        state["keywords"] = list({*state.get("keywords", []), *list(item.ai_keywords)})
+        if item.ai_summary:
+            state["key_facts"] = [item.ai_summary] + [fact for fact in state.get("key_facts", []) if fact != item.ai_summary]
+            state["key_facts"] = state["key_facts"][:8]
+        state["timeline"].insert(
+            0,
+            {
+                "timestamp": now.isoformat(),
+                "update_type": update_type,
+                "update_summary": item.ai_summary or item.title,
+                "importance_score": round(min(1.0, 0.4 + (abs(item.signal_impact_score) / 200)), 3),
+                "signal_impact_score": item.signal_impact_score,
+                "source": item.source,
+            },
+        )
+        state["timeline"] = state["timeline"][:12]
+        state["status"] = _event_status(state["last_seen_at"], len(state["timeline"]), len(state.get("unresolved_points", [])))
+        changed_events.append(state)
+    metrics = {
+        "events_changed": len(changed_events),
+        "events_created": created,
+        "events_matched": matched,
+        "active_events": len(_EVENT_MEMORY),
+    }
+    return changed_events, metrics
+
+
+def _generate_flash_cards_from_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    cards: list[dict[str, Any]] = []
+    for state in events:
+        event_id = state["event_id"]
+        timeline = state.get("timeline", [])
+        latest = timeline[0] if timeline else {}
+        prior = timeline[1:4]
+        relevant_context = [row.get("update_summary", "") for row in prior if row.get("update_summary")]
+        current_update = latest.get("update_summary", state.get("canonical_title", ""))
+        smart_summary = (
+            f"{current_update} "
+            f"This remains {state.get('status', 'active')} with {len(timeline)} tracked updates and "
+            f"{len(state.get('keywords', []))} key signals."
+        ).strip()
+        card = {
+            "card_id": f"card_{event_id}",
+            "event_id": event_id,
+            "title": state.get("canonical_title", "Unknown event"),
+            "smart_summary": smart_summary,
+            "current_update": current_update,
+            "relevant_context": relevant_context,
+            "key_points": state.get("key_facts", [])[:4],
+            "keywords": state.get("keywords", [])[:10],
+            "class_name": state.get("primary_class", "geopolitics"),
+            "status": state.get("status", "active"),
+            "confidence_score": round(float(state.get("confidence_score", 0.6)), 3),
+            "freshness_score": round(max(0.0, 1.0 - ((datetime.now(UTC) - state.get("last_seen_at", datetime.now(UTC))).total_seconds() / 86400.0)), 3),
+            "first_seen_at": state.get("first_seen_at").isoformat() if isinstance(state.get("first_seen_at"), datetime) else None,
+            "last_updated_at": state.get("last_seen_at").isoformat() if isinstance(state.get("last_seen_at"), datetime) else None,
+            "source_count": len({row.get("source") for row in timeline if row.get("source")}),
+            "article_count": len(timeline),
+        }
+        _EVENT_CARD_MEMORY[event_id] = card
+        cards.append(card)
+    cards.sort(key=lambda row: row.get("last_updated_at") or "", reverse=True)
+    return cards
+
+
+def _signal_impact_summary(signals: list[SignalItem]) -> dict[str, Any]:
+    scoped = [item for item in signals if item.ai_include_in_scope]
+    if not scoped:
+        return {"avg": 0, "min": 0, "max": 0, "positive_count": 0, "negative_count": 0}
+    scores = [int(item.signal_impact_score) for item in scoped]
+    return {
+        "avg": int(round(sum(scores) / len(scores))),
+        "min": min(scores),
+        "max": max(scores),
+        "positive_count": len([v for v in scores if v > 0]),
+        "negative_count": len([v for v in scores if v < 0]),
+    }
+
+
+def _apply_signal_impact_to_scenarios(rows: list[dict[str, Any]], signal_impact_avg: int) -> list[dict[str, Any]]:
+    if not rows or signal_impact_avg == 0:
+        return rows
+    impact_norm = max(-1.0, min(1.0, signal_impact_avg / 100.0))
+    mapped = {row["name"]: float(row["probability"]) for row in rows}
+    if impact_norm < 0:
+        mapped["Regional war escalation"] = mapped.get("Regional war escalation", 0.0) * (1 + (abs(impact_norm) * 0.45))
+        mapped["Maritime or infrastructure shock"] = mapped.get("Maritime or infrastructure shock", 0.0) * (1 + (abs(impact_norm) * 0.3))
+        mapped["Negotiated stabilization"] = mapped.get("Negotiated stabilization", 0.0) * (1 - (abs(impact_norm) * 0.4))
+    else:
+        mapped["Negotiated stabilization"] = mapped.get("Negotiated stabilization", 0.0) * (1 + (impact_norm * 0.45))
+        mapped["Controlled partial reopening or corridor deal"] = mapped.get("Controlled partial reopening or corridor deal", 0.0) * (1 + (impact_norm * 0.25))
+        mapped["Regional war escalation"] = mapped.get("Regional war escalation", 0.0) * (1 - (impact_norm * 0.35))
+    return _map_to_ranked_rows(mapped)
+
+
 async def _semantic_enrich_signals(
     items: list[SignalItem],
     *,
@@ -436,6 +680,8 @@ async def _semantic_enrich_signals(
     if not items:
         return items, {"summary": "No signals available.", "keywords": []}
     if not provider_info.get("llm_enabled"):
+        for item in items:
+            _deterministic_signal_annotation(item)
         return items, {"summary": "LLM disabled; deterministic parsing active.", "keywords": []}
 
     compact_rows = []
@@ -470,6 +716,13 @@ async def _semantic_enrich_signals(
                 "assigned_issue": "red-sea-shipping",
                 "relevance_score": 0.82,
                 "include_in_scope": True,
+                "primary_class": "geopolitics",
+                "secondary_classes": ["security", "energy"],
+                "entities": ["Iran", "Israel", "Hormuz"],
+                "candidate_event_label": "Escalation risk in Hormuz corridor",
+                "candidate_event_type": "security_incident",
+                "novelty_hint": "new_fact",
+                "signal_impact_score": -42,
                 "forces": {force: 0.0 for force in FORCE_KEYWORDS},
             }
         ],
@@ -482,8 +735,10 @@ async def _semantic_enrich_signals(
         "1) For each signal idx, produce brief, keywords(3-6), and force scores across military/economic/diplomatic/narrative/ideological/cyber.\n"
         "2) Force scores must be floats in [0,1] and reflect causal relevance, not keyword counts.\n"
         "3) Assign each signal to one issue slug from selected_issue_slugs, add relevance_score [0,1], and include_in_scope boolean.\n"
-        "4) Produce compiled_summary (120-180 words, factual, no hallucinations) and compiled_keywords(6-12).\n"
-        "5) If evidence is ambiguous, lower force intensity and note uncertainty in brief."
+        "4) Add primary_class, secondary_classes, entities, candidate_event_label, candidate_event_type, novelty_hint.\n"
+        "5) Add signal_impact_score in range [-100,+100], where negative means escalatory/system-stress and positive means stabilizing/de-risking.\n"
+        "6) Produce compiled_summary (120-180 words, factual, no hallucinations) and compiled_keywords(6-12).\n"
+        "7) If evidence is ambiguous, lower force intensity and note uncertainty in brief."
     )
 
     issue_scope = selected_issues or _default_selected_issues()
@@ -540,6 +795,8 @@ async def _semantic_enrich_signals(
             parsed_result = None
 
     if not isinstance(parsed_result, dict):
+        for item in items:
+            _deterministic_signal_annotation(item)
         return items, {"summary": "Semantic parser unavailable; deterministic parsing active.", "keywords": []}
     _SEMANTIC_PARSE_CACHE[cache_key] = (now, parsed_result)
 
@@ -554,11 +811,22 @@ async def _semantic_enrich_signals(
     for idx, item in enumerate(items[:40]):
         ai_row = by_idx.get(idx)
         if not ai_row:
+            _deterministic_signal_annotation(item)
             continue
         item.ai_summary = str(ai_row.get("brief", "")).strip()[:400]
         keywords = ai_row.get("keywords")
         if isinstance(keywords, list):
             item.ai_keywords = tuple(str(token).strip() for token in keywords if str(token).strip())[:12]
+        item.primary_class = str(ai_row.get("primary_class", item.primary_class or "geopolitics")).strip() or "geopolitics"
+        secondary = ai_row.get("secondary_classes")
+        if isinstance(secondary, list):
+            item.secondary_classes = tuple(str(token).strip() for token in secondary if str(token).strip())[:8]
+        entities = ai_row.get("entities")
+        if isinstance(entities, list):
+            item.entities = tuple(str(token).strip() for token in entities if str(token).strip())[:10]
+        item.candidate_event_label = str(ai_row.get("candidate_event_label", item.candidate_event_label or item.title[:120])).strip()[:180]
+        item.candidate_event_type = str(ai_row.get("candidate_event_type", item.candidate_event_type or "event_update")).strip()[:60]
+        item.novelty_hint = str(ai_row.get("novelty_hint", item.novelty_hint or "")).strip()[:80]
         assigned_issue = str(ai_row.get("assigned_issue", item.issue)).strip()
         if assigned_issue in ISSUE_CATALOG:
             item.ai_assigned_issue = assigned_issue
@@ -573,9 +841,15 @@ async def _semantic_enrich_signals(
         if issue_scope and item.issue not in issue_scope:
             include_in_scope = False
         item.ai_include_in_scope = include_in_scope
+        try:
+            item.signal_impact_score = int(round(max(-100.0, min(100.0, float(ai_row.get("signal_impact_score", 0.0))))))
+        except (TypeError, ValueError):
+            item.signal_impact_score = 0
         forces = ai_row.get("forces")
         if isinstance(forces, dict):
             item.ai_force_scores = _sanitize_force_scores(forces)
+    for item in items[40:]:
+        _deterministic_signal_annotation(item)
 
     compiled_keywords = parsed_result.get("compiled_keywords")
     if not isinstance(compiled_keywords, list):
@@ -1754,6 +2028,9 @@ def _normalize_items(raw_items: list[SignalItem], limit: int, *, provider_info: 
                 "published_utc": None if item.published_utc is None else item.published_utc.isoformat(),
                 "summary": item.ai_summary or item.summary,
                 "keywords": list(item.ai_keywords),
+                "primary_class": item.primary_class,
+                "candidate_event_label": item.candidate_event_label or item.title,
+                "signal_impact_score": int(item.signal_impact_score),
                 "intelligence_metadata": _build_intelligence_metadata(
                     provider_info,
                     confidence_score=0.62,
@@ -1836,6 +2113,7 @@ def _build_alternative_signals(
                     "link": f"https://example.com/alternative/{issue}/{source_idx}",
                     "issue": issue,
                     "published_utc": published.isoformat(),
+                    "signal_impact_score": -22 if source["type"] in {"conspiracy", "conspiracy-adjacent"} else -10,
                     "intelligence_metadata": _build_intelligence_metadata(
                         provider_info,
                         confidence_score=0.41,
@@ -1884,6 +2162,9 @@ async def fetch_alternative_signals(
                             "published_utc": None if item.published_utc is None else item.published_utc.isoformat(),
                             "summary": item.ai_summary or item.summary,
                             "keywords": list(item.ai_keywords),
+                            "primary_class": item.primary_class,
+                            "candidate_event_label": item.candidate_event_label or item.title,
+                            "signal_impact_score": int(item.signal_impact_score),
                             "intelligence_metadata": _build_intelligence_metadata(
                                 provider_info,
                                 confidence_score=0.45,
@@ -2625,15 +2906,20 @@ async def build_dashboard_snapshot(
 ) -> dict[str, Any]:
     if lens not in LENS_TYPES:
         lens = "global"
+    effective_selected_issues = selected_issues or _default_selected_issues()
     provider_info = resolve_intelligence_provider(prefer_local_ai=local_ai_enabled)
-    signals = await fetch_signals(selected_issues, use_live=use_live)
+    signals = await fetch_signals(effective_selected_issues, use_live=use_live)
+    accepted_signals, rejected_signals, ingest_kpis = _normalize_and_quality_gate(signals)
     signals, signal_digest = await _semantic_enrich_signals(
-        signals,
+        accepted_signals,
         provider_info=provider_info,
-        selected_issues=selected_issues,
+        selected_issues=effective_selected_issues,
     )
+    signal_impact = _signal_impact_summary(signals)
+    updated_events, event_kpis = _update_event_memory(signals)
+    event_cards = _generate_flash_cards_from_events(updated_events)
     force_scores = _aggregate_forces(signals)
-    issue_pressure = _issue_pressure(selected_issues)
+    issue_pressure = _issue_pressure(effective_selected_issues)
     driving_rows = _driving_forces_method(force_scores)
     game_rows = _game_theory_method(force_scores, issue_pressure)
     chess_rows, actor_moves = _chessboard_method(force_scores, issue_pressure, iterations=4)
@@ -2646,6 +2932,7 @@ async def build_dashboard_snapshot(
         issue_pressure=issue_pressure,
         trend=trend,
     )
+    scenarios = _apply_signal_impact_to_scenarios(scenarios, signal_impact["avg"])
     top_state = "Controlled instability"
     if scenarios and scenarios[0]["name"] in {"Negotiated stabilization", "Managed confrontation"}:
         top_state = "Managed tension"
@@ -2662,8 +2949,8 @@ async def build_dashboard_snapshot(
         issue_pressure,
         conflict_score=conflict_escalation["score"],
     )
-    impacts = _build_impacts(selected_issues, force_scores, scenarios, lens=lens, focus=focus)
-    major_conflicts = _identify_major_conflicts(selected_issues, scenarios, force_scores)
+    impacts = _build_impacts(effective_selected_issues, force_scores, scenarios, lens=lens, focus=focus)
+    major_conflicts = _identify_major_conflicts(effective_selected_issues, scenarios, force_scores)
     pestel_framework = _build_pestel_framework(force_scores, lens=lens, focus=focus)
     lens_alignment = _build_lens_alignment(lens, focus)
     consistency_notes = _consistency_warnings(top_state, trend, criticality, conflict_escalation)
@@ -2733,6 +3020,7 @@ async def build_dashboard_snapshot(
         "generated_utc": datetime.now(UTC).isoformat(),
         "mode": "live" if use_live else "demo",
         "selected_issues": selected_issues,
+        "selected_issues_effective": effective_selected_issues,
         "lens": {"type": lens, "focus": focus},
         "current_state": {"label": top_state, "confidence": round(scenarios[0]["probability"], 3) if scenarios else 0.0},
         "trend": trend,
@@ -2757,6 +3045,19 @@ async def build_dashboard_snapshot(
         "scenario_visual": scenario_visual,
         "update_policy": refresh_policy,
         "signal_digest": signal_digest,
+        "signal_impact": signal_impact,
+        "event_cards": event_cards,
+        "node_metrics": {
+            "fetch_news_batch": {"input_count": len(signals) + len(rejected_signals), "output_count": len(signals)},
+            "quality_gate": ingest_kpis,
+            "match_active_event_cards": event_kpis,
+            "compute_graph_kpis": {
+                "active_event_count": len(_EVENT_MEMORY),
+                "cards_updated": len(event_cards),
+                "rejected_articles": len(rejected_signals),
+                "signal_impact_avg": signal_impact["avg"],
+            },
+        },
         "source_health": source_health_rows(),
         "alternative_intelligence": {
             "disclaimer": "Alternative/esoteric sources are not validated truth. Use for narrative-monitoring only.",
@@ -2765,6 +3066,7 @@ async def build_dashboard_snapshot(
         "expert_review": expert_review,
         "impacts": impacts,
         "signals": _normalize_items(signals, limit=20, provider_info=provider_info, use_live=use_live),
+        "rejected_signals": rejected_signals[:20],
         "explanation": explanation,
         "prediction": prediction,
     }
@@ -2778,8 +3080,9 @@ async def build_alternative_snapshot(
     focus: str | None = None,
     local_ai_enabled: bool = True,
 ) -> dict[str, Any]:
+    effective_selected_issues = selected_issues or _default_selected_issues()
     base = await build_dashboard_snapshot(
-        selected_issues,
+        effective_selected_issues,
         use_live=use_live,
         lens=lens,
         focus=focus,
@@ -2791,14 +3094,14 @@ async def build_alternative_snapshot(
     }
     generated_at = datetime.now(UTC)
     alternative_signals = await fetch_alternative_signals(
-        selected_issues,
+        effective_selected_issues,
         use_live=use_live,
         provider_info=provider_info,
         generated_at=generated_at,
     )
     alt_signal_items = _alternative_rows_to_signal_items(alternative_signals)
-    issue_pressure = _issue_pressure(selected_issues)
-    theme_rows = _build_alternative_theme_matrix(selected_issues, issue_pressure)
+    issue_pressure = _issue_pressure(effective_selected_issues)
+    theme_rows = _build_alternative_theme_matrix(effective_selected_issues, issue_pressure)
 
     base_force_scores = {row["name"]: float(row["score"]) for row in base.get("forces", [])}
     for force in FORCE_KEYWORDS:
@@ -2821,6 +3124,12 @@ async def build_alternative_snapshot(
         issue_pressure=min(1.0, issue_pressure + 0.08),
         trend=base.get("trend", "stable"),
     )
+    alt_signal_impact = {
+        "avg": int(round(sum([int(row.get("signal_impact_score", 0)) for row in alternative_signals]) / max(1, len(alternative_signals)))),
+        "min": min([int(row.get("signal_impact_score", 0)) for row in alternative_signals], default=0),
+        "max": max([int(row.get("signal_impact_score", 0)) for row in alternative_signals], default=0),
+    }
+    alt_scenarios = _apply_signal_impact_to_scenarios(alt_scenarios, alt_signal_impact["avg"])
     alt_conflict = _calculate_conflict_escalation(alt_scenarios, alt_force_scores, min(1.0, issue_pressure + 0.08))
     alt_criticality = _calculate_overall_criticality(
         alt_scenarios,
@@ -2829,7 +3138,7 @@ async def build_alternative_snapshot(
         min(1.0, issue_pressure + 0.08),
         conflict_score=alt_conflict["score"],
     )
-    alt_impacts = _build_impacts(selected_issues, alt_force_scores, alt_scenarios, lens=lens, focus=focus)
+    alt_impacts = _build_impacts(effective_selected_issues, alt_force_scores, alt_scenarios, lens=lens, focus=focus)
     alt_expert = _build_expert_review(
         top_state=base.get("current_state", {}).get("label", "Managed tension"),
         trend=base.get("trend", "stable"),
@@ -2842,7 +3151,7 @@ async def build_alternative_snapshot(
         f"{alt_scenarios[0]['name'].lower()} remains the strongest narrative path."
     ) if alt_scenarios else "Alternative blended outlook pending."
     alt_creative_prediction = await _generate_creative_prediction_payload(
-        selected_issues=selected_issues,
+        selected_issues=effective_selected_issues,
         scenario=alt_scenarios[0]["name"] if alt_scenarios else "Alternative scenario pending",
         probability=float(alt_scenarios[0]["probability"]) if alt_scenarios else 0.0,
         prediction_text=alt_prediction,
@@ -2861,6 +3170,7 @@ async def build_alternative_snapshot(
     return {
         **base,
         "mode": "alternative",
+        "selected_issues_effective": effective_selected_issues,
         "forces": [{"name": name, "score": score} for name, score in sorted(alt_force_scores.items(), key=lambda item: item[1], reverse=True)],
         "scenarios": alt_scenarios,
         "scenario_methods": {
@@ -2882,6 +3192,7 @@ async def build_alternative_snapshot(
         "expert_review": alt_expert,
         "signals": merged_signals,
         "prediction": alt_prediction,
+        "signal_impact": alt_signal_impact,
         "creative_prediction": alt_creative_prediction,
         "explanation": (
             "This page blends verified feeds with rumors, speculative/esoteric framing, and conspiracy-adjacent narratives. "
